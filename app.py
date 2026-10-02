@@ -7,6 +7,8 @@ import io
 import os
 import secrets
 import sys
+import threading
+import time
 import uuid
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -41,6 +43,7 @@ load_dotenv(BASE_DIR / ".env")
 db.init_db()
 
 _instance_lock_handle = None
+ALREADY_RUNNING_EXIT_CODE = 10  # run_bot.ps1 stops instead of restarting on this code
 
 def _ensure_single_instance() -> None:
     """Hold an OS-managed lock so concurrent starts cannot run duplicate workers."""
@@ -62,7 +65,8 @@ def _ensure_single_instance() -> None:
     except OSError:
         _instance_lock_handle.close()
         _instance_lock_handle = None
-        sys.exit("Another copy of this bot is already running. Close that window first.")
+        print("Another copy of this bot is already running. Close that window first.", file=sys.stderr)
+        sys.exit(ALREADY_RUNNING_EXIT_CODE)
     _instance_lock_handle.seek(0)
     _instance_lock_handle.write(str(os.getpid()).encode("ascii").ljust(16, b" "))
     _instance_lock_handle.flush()
@@ -340,6 +344,32 @@ def logo_file(filename: str):
     return send_from_directory(db.LOGO_DIR, filename, max_age=3600)
 
 
+@app.get("/health")
+def health():
+    state = worker.health()
+    feeds = db.list_feeds()
+    state["feeds"] = {
+        "enabled": sum(1 for f in feeds if f["enabled"]),
+        "erroring": [f["source_name"] for f in feeds if f["enabled"] and f["last_error"]],
+    }
+    state["autopost_enabled"] = db.setting("autopost_enabled", "0") == "1"
+    return state, (200 if state["ok"] else 503)
+
+
+def _self_watchdog() -> None:
+    """Exit if a worker loop dies or hangs, so the supervisor (run_bot.ps1) restarts
+    the bot cleanly instead of leaving a dashboard that silently stopped posting."""
+    while True:
+        time.sleep(60)
+        state = worker.health()
+        if not state["ok"]:
+            try:
+                db.add_event("error", f"Worker unhealthy, restarting: {state}")
+            finally:
+                print(f"Worker unhealthy, exiting for restart: {state}", flush=True)
+                os._exit(3)
+
+
 @app.errorhandler(413)
 def too_large(_error):
     flash("Upload is too large. Logo files must be 10 MB or smaller.", "error")
@@ -349,6 +379,11 @@ def too_large(_error):
 if __name__ == "__main__":
     port = int(os.getenv("APP_PORT", "5000"))
     host = "127.0.0.1"
-    print(f"OniNews feed bot dashboard: http://{host}:{port}")
-    print("Keep this window open while the bot is running.")
-    app.run(host=host, port=port, debug=False, use_reloader=False, threaded=True)
+    threading.Thread(target=_self_watchdog, name="self-watchdog", daemon=True).start()
+    print(f"OniNews feed bot dashboard: http://{host}:{port}", flush=True)
+    try:
+        from waitress import serve
+    except ImportError:
+        app.run(host=host, port=port, debug=False, use_reloader=False, threaded=True)
+    else:
+        serve(app, host=host, port=port, threads=8, ident="OniNews")

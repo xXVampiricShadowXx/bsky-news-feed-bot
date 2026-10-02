@@ -116,6 +116,19 @@ class WorkerTests(unittest.TestCase):
             "last_modified": None, "last_error": None, "source_name": "Example",
         }
 
+    def test_health_reports_stalled_or_dead_loops(self):
+        self.assertFalse(self.bot.health()["ok"])  # threads never started
+        alive = SimpleNamespace(is_alive=lambda: True)
+        self.bot._thread = self.bot._post_thread = alive
+        now = worker.time.time()
+        self.bot.last_poll_finished_at = now
+        self.bot.last_publish_check_at = now
+        self.assertTrue(self.bot.health()["ok"])
+        self.bot.last_poll_finished_at = now - 3600
+        state = self.bot.health()
+        self.assertFalse(state["ok"])
+        self.assertTrue(state["poller"]["stalled"])
+
     def test_failed_first_fetch_still_establishes_baseline(self):
         with patch.object(worker.db, "setting", return_value="1"), \
              patch.object(worker.db, "enabled_feeds", return_value=[self.feed]), \

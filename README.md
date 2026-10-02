@@ -49,7 +49,7 @@ Multiple feeds can use the same publisher profile and logo. Disable a feed to st
 
 The private GitHub repository backs up the tracked application source and provides change history. Changes made locally are not backed up there until they are committed and pushed. Keep the repository private unless you deliberately decide to publish the code, and never add `.env`, the database, logos, or logs to Git.
 
-GitHub stores the source; it does not run the bot. The PowerShell window and dashboard process must remain running for automatic posting.
+GitHub stores the source; it does not run the bot. See **Keep it running** below.
 
 ## Run the tests
 
@@ -66,6 +66,43 @@ https://www.pbs.org/newshour/feeds/rss/headlines
 
 Create a `PBS NewsHour` source profile and upload the logo image you want attached to those posts, then connect this URL to that profile.
 
-## Local versus always-on hosting
+## Keep it running
 
-This first version runs on your computer. It posts only while the PowerShell window and dashboard process are running. Hosting it on an always-on server can come later; keep the `.env` credentials private and keep the dashboard access restricted if you move it.
+`start.ps1` (and `run_bot.ps1`, which it calls) runs the bot under a supervisor:
+
+- The bot restarts automatically if it crashes or stalls. The wait between restarts grows from 5 seconds to 5 minutes, and resets once the bot has run for 10 minutes.
+- Output is appended to `logs\bot-YYYY-MM-DD.log`. Logs older than 14 days are deleted.
+- If the bot finds another copy already running, it stops instead of looping.
+
+To start the bot automatically whenever you sign in to Windows, with no window open, run this once:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install_autostart.ps1
+Start-ScheduledTask -TaskName 'OniNews Feed Bot'   # start now without signing out
+```
+
+To remove the auto-start task, run `install_autostart.ps1 -Uninstall`. To stop the bot, end the task in Task Scheduler.
+
+[http://127.0.0.1:5000/health](http://127.0.0.1:5000/health) reports the bot's state as JSON. It returns HTTP 200 when both the poller and the publisher are alive and completing cycles, and 503 otherwise. A watchdog inside the bot exits if either loop stalls, so the supervisor restarts it. The dashboard is served by Waitress.
+
+The bot posts only while this computer is on and signed in. To run around the clock, host it on an always-on server, keep the `.env` credentials private, and restrict access to the dashboard.
+
+## Current sources
+
+All sources are public broadcasters, non-profits, trust-owned publishers, or intergovernmental bodies:
+
+- PBS News
+- NPR
+- BBC News
+- DW News
+- ABC News (ABC Australia)
+- CBC News
+- RTÉ News
+- SBS News
+- France 24
+- RFI
+- UN News
+- The Guardian (owned by the Scott Trust)
+- RNZ
+
+Wire-service copy is credited alongside the publisher.

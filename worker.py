@@ -26,6 +26,28 @@ class BotWorker:
         self._publisher = BlueskyPublisher()
         self._caught_up_feed_ids: set[int] = set()
         self._poll_lock = threading.Lock()
+        self.started_at = time.time()
+        self.last_poll_finished_at: float | None = None
+        self.last_publish_check_at: float | None = None
+
+    def health(self) -> dict:
+        """Liveness of both loops. A loop is stalled if it hasn't completed a cycle
+        in several times its normal interval (a hung network call, deadlock, etc.)."""
+        now = time.time()
+
+        def loop_state(thread: threading.Thread | None, last: float | None, interval: float) -> dict:
+            reference = last or self.started_at
+            stalled = now - reference > max(interval * 6, 600)
+            return {
+                "alive": bool(thread and thread.is_alive()),
+                "seconds_since_cycle": round(now - reference, 1) if last else None,
+                "stalled": stalled,
+            }
+
+        poller = loop_state(self._thread, self.last_poll_finished_at, POLL_SECONDS)
+        poster = loop_state(self._post_thread, self.last_publish_check_at, POST_CHECK_SECONDS)
+        healthy = all(s["alive"] and not s["stalled"] for s in (poller, poster))
+        return {"ok": healthy, "uptime_seconds": round(now - self.started_at), "poller": poller, "publisher": poster}
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -45,6 +67,7 @@ class BotWorker:
                 self.poll_enabled_feeds()
             except Exception as exc:
                 db.add_event("error", f"Feed poll recovered from an unexpected error: {exc}")
+            self.last_poll_finished_at = time.time()
             self._stop.wait(max(0, POLL_SECONDS - (time.monotonic() - started_at)))
 
     def _run_posts(self) -> None:
@@ -54,6 +77,7 @@ class BotWorker:
                     self.publish_pending()
             except Exception as exc:
                 db.add_event("error", f"Publisher recovered from an unexpected error: {exc}")
+            self.last_publish_check_at = time.time()
             self._stop.wait(POST_CHECK_SECONDS)
 
     def activate_feed(self, feed_id: int) -> int:
