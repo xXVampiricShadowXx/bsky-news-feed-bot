@@ -1,0 +1,17 @@
+.git
+.github
+.venv
+.vs
+.env
+.env.*
+!.env.example
+instance
+logs
+tests
+**/__pycache__
+*.py[cod]
+*.ps1
+*.sh
+*.md
+Dockerfile
+docker-compose.yml

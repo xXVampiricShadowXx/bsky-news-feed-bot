@@ -3,16 +3,16 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>OniNews Feed Bot</title>
+  <title>{{ bot_name }}</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
   <main class="shell">
     <header class="topbar">
       <div class="brand-lockup">
-        <div class="brand-mark">ON</div>
+        <div class="brand-mark">{{ bot_initials }}</div>
         <div>
-          <p class="eyebrow">ONINEWS · AUTOMATION</p>
+          <p class="eyebrow">{{ bot_name | upper }} · AUTOMATION</p>
           <h1>RSS desk</h1>
         </div>
       </div>
@@ -20,7 +20,7 @@
         <span class="status-dot {{ 'is-live' if autopost_enabled else '' }}"></span>
         <span>{{ 'Posting is on' if autopost_enabled else 'Posting is paused' }}</span>
         <span class="divider">·</span>
-        <span class="mono">{{ bluesky_handle }}</span>
+        <span class="mono">{{ bluesky_handle or 'no account set' }}</span>
       </div>
     </header>
 
@@ -89,9 +89,9 @@
       <article class="panel format-card">
         <p class="eyebrow">POST FORMAT</p>
         <div class="post-preview">
-          <div class="preview-avatar">ON</div>
+          <div class="preview-avatar">{{ bot_initials }}</div>
           <div class="preview-content">
-            <div class="preview-byline"><strong>OniNews</strong><span class="mono">@oninews.bsky.social</span></div>
+            <div class="preview-byline"><strong>{{ bot_name }}</strong><span class="mono">@{{ bluesky_handle or 'you.bsky.social' }}</span></div>
             <p class="preview-headline">Full story headline goes here</p>
             <p class="preview-source">(Source: PBS NewsHour)</p>
             <p class="preview-url">https://www.pbs.org/newshour/...</p>
@@ -104,6 +104,20 @@
 
     <section class="content-grid">
       <div class="main-column">
+        <article class="panel">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">QUICK START · STARTER PACK</p>
+              <h2>Add {{ starter_count }} public-media newsrooms</h2>
+            </div>
+          </div>
+          <p class="muted">One click adds PBS, NPR, BBC, The Guardian, CBC, ABC (Australia), SBS, RNZ, RTÉ, DW, France 24, RFI and UN News world feeds, fetches each publisher's own icon, and switches the feeds on. Stories already in the feeds are skipped, so nothing old is posted. Sources you already have are left alone.</p>
+          <form method="post" action="{{ url_for('add_starter_pack') }}" onsubmit="this.querySelector('button').disabled=true; this.querySelector('button').textContent='Adding sources…';">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button class="button button-primary" type="submit">Add starter sources</button>
+          </form>
+        </article>
+
         <article class="panel">
           <div class="section-heading">
             <div>
@@ -264,7 +278,7 @@
                   <div>
                     <strong>{{ item.source_name }}</strong>
                     <p>{{ item.headline }}</p>
-                    {% if item.bsky_uri %}<a class="tiny" href="https://bsky.app/profile/{{ bluesky_handle }}/post/{{ item.bsky_uri.split('/')[-1] }}" target="_blank" rel="noreferrer">Open post ↗</a>{% endif %}
+                    {% if item.bsky_uri %}<a class="tiny" href="https://bsky.app/profile/{{ item.bsky_uri.split('/')[2] }}/post/{{ item.bsky_uri.split('/')[-1] }}" target="_blank" rel="noreferrer">Open post ↗</a>{% endif %}
                     {% if item.last_error %}<p class="tiny error-text">{{ item.last_error }}</p>{% endif %}
                   </div>
                 </div>
@@ -299,7 +313,7 @@
     </section>
 
     <footer class="footer">
-      <span>OniNews Feed Bot · Local dashboard</span>
+      <span>{{ bot_name }} · v{{ app_version }} · <a href="{{ repo_url }}" target="_blank" rel="noreferrer">source &amp; updates</a></span>
       <span>Keep this app running for automatic posting.</span>
     </footer>
   </main>

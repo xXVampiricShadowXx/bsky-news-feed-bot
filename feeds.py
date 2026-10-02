@@ -17,7 +17,7 @@ import feedparser
 import topics
 
 
-USER_AGENT = "OniNewsFeedBot/0.1 (+local RSS reader)"
+from config import USER_AGENT
 TIMEOUT_SECONDS = 25
 
 

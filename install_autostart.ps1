@@ -2,10 +2,10 @@
 # so it keeps posting after reboots without a PowerShell window open.
 #   Install:   powershell -ExecutionPolicy Bypass -File .\install_autostart.ps1
 #   Remove:    powershell -ExecutionPolicy Bypass -File .\install_autostart.ps1 -Uninstall
-param([switch]$Uninstall)
+#   Run several bots? Give each copy its own -TaskName (and APP_PORT in its .env).
+param([switch]$Uninstall, [string]$TaskName = 'Bluesky News Feed Bot')
 
 $ErrorActionPreference = 'Stop'
-$taskName = 'OniNews Feed Bot'
 
 if ($Uninstall) {
     Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
@@ -28,4 +28,4 @@ $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interac
 Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger `
     -Settings $settings -Principal $principal -Force | Out-Null
 Write-Host "Installed '$taskName': the bot now starts automatically when you sign in." -ForegroundColor Green
-Write-Host 'Start it now without signing out:  Start-ScheduledTask -TaskName ''OniNews Feed Bot''' -ForegroundColor DarkGray
+Write-Host "Start it now without signing out:  Start-ScheduledTask -TaskName '$taskName'" -ForegroundColor DarkGray

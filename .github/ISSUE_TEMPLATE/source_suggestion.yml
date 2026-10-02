@@ -1,0 +1,22 @@
+name: Suggest a news source
+description: Propose a public-media or non-profit feed for the starter pack
+labels: [source-suggestion]
+body:
+  - type: input
+    id: name
+    attributes:
+      label: Outlet name (exactly as it should appear in post credits)
+    validations:
+      required: true
+  - type: input
+    id: feed
+    attributes:
+      label: RSS / Atom feed URL (world or international news)
+    validations:
+      required: true
+  - type: input
+    id: ownership
+    attributes:
+      label: Link showing the outlet is public-service, non-profit, or trust-owned
+    validations:
+      required: true

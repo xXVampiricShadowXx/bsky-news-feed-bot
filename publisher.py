@@ -26,7 +26,7 @@ from feeds import canonical_story_key
 # Error names Bluesky uses when it is telling us the login itself is no good.
 _SESSION_ERROR_NAMES = {"ExpiredToken", "InvalidToken", "AuthenticationRequired"}
 
-USER_AGENT = "OniNewsFeedBot/0.1 (+local RSS reader)"
+from config import USER_AGENT
 ARTICLE_FETCH_TIMEOUT = 10
 MAX_HTML_BYTES = 1_500_000
 MAX_THUMB_DOWNLOAD_BYTES = 8_000_000
@@ -335,7 +335,7 @@ def _posted_article_url(value: object) -> str | None:
 
 class BlueskyPublisher:
     def __init__(self) -> None:
-        self.handle = os.getenv("BLUESKY_HANDLE", "oninews.bsky.social").strip()
+        self.handle = os.getenv("BLUESKY_HANDLE", "").strip().lstrip("@")
         self.app_password = os.getenv("BLUESKY_APP_PASSWORD", "").strip()
         self._client: Client | None = None
         self._lock = threading.Lock()

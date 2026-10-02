@@ -1,0 +1,18 @@
+{
+  "description": "Public-service and non-profit newsrooms with English-language world news feeds. Every post credits the source by name and links to the original article.",
+  "sources": [
+    {"name": "PBS News", "website": "https://www.pbs.org/newshour/", "feed": "https://www.pbs.org/newshour/feeds/rss/world", "country": "US", "type": "public broadcaster"},
+    {"name": "NPR", "website": "https://www.npr.org/", "feed": "https://feeds.npr.org/1004/rss.xml", "country": "US", "type": "non-profit public radio"},
+    {"name": "BBC News", "website": "https://www.bbc.com/news", "feed": "https://feeds.bbci.co.uk/news/world/rss.xml", "country": "UK", "type": "public broadcaster"},
+    {"name": "The Guardian", "website": "https://www.theguardian.com/", "feed": "https://www.theguardian.com/world/rss", "country": "UK", "type": "trust-owned, not-for-profit"},
+    {"name": "CBC News", "website": "https://www.cbc.ca/news", "feed": "https://www.cbc.ca/webfeed/rss/rss-world", "country": "CA", "type": "public broadcaster"},
+    {"name": "ABC News", "website": "https://www.abc.net.au/news", "feed": "https://www.abc.net.au/news/feed/45910/rss.xml", "country": "AU", "type": "public broadcaster (Australian Broadcasting Corporation)"},
+    {"name": "SBS News", "website": "https://www.sbs.com.au/news", "feed": "https://www.sbs.com.au/news/topic/world/feed", "country": "AU", "type": "public broadcaster"},
+    {"name": "RNZ", "website": "https://www.rnz.co.nz/news", "feed": "https://www.rnz.co.nz/rss/world.xml", "country": "NZ", "type": "public broadcaster"},
+    {"name": "RTÉ News", "website": "https://www.rte.ie/news/", "feed": "https://www.rte.ie/feeds/rss/?index=/news/world/", "country": "IE", "type": "public broadcaster"},
+    {"name": "DW News", "website": "https://www.dw.com/en/", "feed": "https://rss.dw.com/rdf/rss-en-world", "country": "DE", "type": "public broadcaster"},
+    {"name": "France 24", "website": "https://www.france24.com/en/", "feed": "https://www.france24.com/en/rss", "country": "FR", "type": "public broadcaster"},
+    {"name": "RFI", "website": "https://www.rfi.fr/en/", "feed": "https://www.rfi.fr/en/tag/world/rss", "country": "FR", "type": "public broadcaster"},
+    {"name": "UN News", "website": "https://news.un.org/en/", "feed": "https://news.un.org/feed/subscribe/en/news/all/rss.xml", "country": "UN", "type": "United Nations news service"}
+  ]
+}

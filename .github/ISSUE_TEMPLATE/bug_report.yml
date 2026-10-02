@@ -1,0 +1,24 @@
+name: Bug report
+description: Something isn't working
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: What did you expect, and what happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log lines
+      description: From the logs folder or `docker compose logs`. Remove your handle and app password first.
+      render: text
+  - type: dropdown
+    id: install
+    attributes:
+      label: How do you run it?
+      options: [Windows (start.ps1), macOS / Linux (start.sh), Docker]
+    validations:
+      required: true

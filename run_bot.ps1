@@ -18,6 +18,7 @@ Get-ChildItem -LiteralPath $logDir -Filter 'bot-*.log' -ErrorAction SilentlyCont
     Remove-Item -Force -ErrorAction SilentlyContinue
 
 $alreadyRunningExitCode = 10
+$configErrorExitCode = 2
 $delaySeconds = 5
 
 while ($true) {
@@ -35,6 +36,10 @@ while ($true) {
 
     if ($exitCode -eq $alreadyRunningExitCode) {
         Write-Host 'Another copy of the bot is already running; not starting a second one.' -ForegroundColor Yellow
+        break
+    }
+    if ($exitCode -eq $configErrorExitCode) {
+        Write-Host 'The bot stopped because of a settings problem (see the message above). Fix .env and start again.' -ForegroundColor Red
         break
     }
 

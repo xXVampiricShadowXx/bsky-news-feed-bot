@@ -1,0 +1,27 @@
+services:
+  bot:
+    build: .
+    image: bsky-news-feed-bot:local
+    env_file: .env
+    environment:
+      # Inside the container the app must listen on all interfaces; the port below is
+      # published to this computer only, so the dashboard is still not on your network.
+      # To open it to your LAN, change the port to "5000:5000" and set DASHBOARD_PASSWORD.
+      APP_HOST: 0.0.0.0
+      APP_PORT: "5000"
+      ALLOW_OPEN_DASHBOARD: "1"
+    ports:
+      - "127.0.0.1:5000:5000"
+    volumes:
+      - bot-data:/data
+    restart: unless-stopped
+    mem_limit: 512m
+    cpus: 1.0
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  bot-data:
