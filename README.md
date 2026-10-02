@@ -7,7 +7,7 @@ Automatically post world news from **public-service and non-profit newsrooms** t
 account, with **correct credit on every post**. It runs on your own computer (Windows, macOS,
 Linux or Docker) and is managed from a simple local dashboard.
 
-See it running at [@oninews.bsky.social](https://bsky.app/profile/oninews.bsky.social).
+See it running as ONI News at [@oninews.bsky.social](https://bsky.app/profile/oninews.bsky.social).
 
 ```text
 EU agrees new sanctions package against Russia
