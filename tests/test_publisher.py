@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 from PIL import Image
 
+import netsafe
 import publisher
 
 
@@ -17,8 +18,8 @@ class PreviewTests(unittest.TestCase):
     def test_rebound_private_address_is_rejected_before_socket_creation(self):
         public = [(2, 1, 6, "", ("93.184.216.34", 443))]
         private = [(2, 1, 6, "", ("127.0.0.1", 443))]
-        with patch.object(publisher.socket, "getaddrinfo", side_effect=[public, private]), \
-             patch.object(publisher.socket, "socket") as create_socket:
+        with patch.object(netsafe.socket, "getaddrinfo", side_effect=[public, private]), \
+             patch.object(netsafe.socket, "socket") as create_socket:
             publisher._validate_public_http_url("https://example.com/image.jpg")
             with self.assertRaises(ValueError):
                 publisher._connect_public_socket("example.com", 443, 1, None)

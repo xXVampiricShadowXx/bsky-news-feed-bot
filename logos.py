@@ -14,6 +14,7 @@ from PIL import Image, ImageDraw, ImageFont, ImageOps, UnidentifiedImageError
 
 import db
 from config import USER_AGENT
+from netsafe import _public_url_opener, _validate_public_http_url
 
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 MAX_BLUESKY_BYTES = 1_900_000
@@ -106,7 +107,6 @@ def _icon_candidates(page: str, base_url: str) -> list[str]:
 
 
 def _download(opener, url: str, limit: int) -> tuple[bytes, str]:
-    from publisher import _validate_public_http_url
 
     _validate_public_http_url(url)
     request = urllib.request.Request(
@@ -118,7 +118,6 @@ def _download(opener, url: str, limit: int) -> tuple[bytes, str]:
 
 def discover_logo(website: str) -> bytes | None:
     """Return the best square icon a publisher advertises for its own site, if any."""
-    from publisher import _public_url_opener
 
     opener = _public_url_opener()
     try:
