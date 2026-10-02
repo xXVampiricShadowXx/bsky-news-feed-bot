@@ -8,9 +8,11 @@ import http.client
 import hashlib
 import ipaddress
 import os
+import re
 import socket
 import threading
 import urllib.request
+from datetime import datetime, timezone
 from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import urljoin, urlsplit
@@ -289,9 +291,40 @@ def _is_session_error(exc: Exception) -> bool:
     return False
 
 
-def _record_key(article_url: str) -> str:
-    story_key = canonical_story_key(article_url)
-    return "oninews-" + hashlib.sha256(story_key.encode("utf-8")).hexdigest()
+_TID_ALPHABET = "234567abcdefghijklmnopqrstuvwxyz"
+_TID_PATTERN = re.compile(r"^[234567abcdefghij][234567abcdefghijklmnopqrstuvwxyz]{12}$")
+
+
+def _record_key(article_url: str, first_seen_at: str | None = None) -> str:
+    """A valid, deterministic TID record key for this story.
+
+    Bluesky only accepts TIDs (13-char base32 timestamp ids) as post record keys.
+    The timestamp comes from when the bot first saw the story, and the sub-second
+    part plus clock id come from the story's URL hash, so every retry of the same
+    story reuses the same key - letting a retry find, not duplicate, an earlier post.
+    """
+    digest = int.from_bytes(
+        hashlib.sha256(canonical_story_key(article_url).encode("utf-8")).digest()[:8], "big"
+    )
+    seconds = 0
+    if first_seen_at:
+        try:
+            stamp = datetime.fromisoformat(first_seen_at.replace("Z", "+00:00"))
+            if stamp.tzinfo is None:
+                stamp = stamp.replace(tzinfo=timezone.utc)
+            seconds = int(stamp.timestamp())
+        except ValueError:
+            seconds = 0
+    if seconds <= 0:
+        seconds = 1_600_000_000 + digest % 100_000_000  # stable fallback, Sept 2020 - Dec 2023
+    micros = seconds * 1_000_000 + digest % 1_000_000
+    clock_id = (digest >> 20) & 0x3FF
+    value = ((micros & ((1 << 53) - 1)) << 10) | clock_id
+    chars = []
+    for _ in range(13):
+        chars.append(_TID_ALPHABET[value & 0x1F])
+        value >>= 5
+    return "".join(reversed(chars))
 
 
 def _posted_article_url(value: object) -> str | None:
@@ -347,6 +380,7 @@ class BlueskyPublisher:
         logo_path: Path | None,
         logo_alt: str,
         credit: str | None = None,
+        first_seen_at: str | None = None,
     ) -> str:
         lead = f"{headline}\n\n({attribution_line(source_name, credit)})\n\n"
         link_text = _link_display_text(article_url)
@@ -373,7 +407,7 @@ class BlueskyPublisher:
         embed_description = (og_description or attribution_line(source_name, credit)).strip()[:1000]
 
         client = self._get_client()
-        rkey = _record_key(article_url)
+        rkey = _record_key(article_url, first_seen_at)
         try:
             external = models.AppBskyEmbedExternal.External(
                 uri=article_url,

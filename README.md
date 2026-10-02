@@ -17,7 +17,7 @@ The post includes an article preview card with its image when available, falling
 ## Start the dashboard
 
 1. Install Python 3.10 or newer.
-2. In File Explorer, open this folder and run `start.ps1` in PowerShell. The first run creates a private Python environment, installs the dependencies, and creates `.env`.
+2. In File Explorer, open this folder and run `start.ps1` in PowerShell. The first run creates a private Python environment, installs the dependencies, and creates `.env`. If Windows says the script "is not digitally signed", run `powershell -ExecutionPolicy Bypass -File .\start.ps1` instead.
 3. Create a Bluesky app password in **Settings → Privacy and Security → App Passwords**. Do not use your regular account password.
 4. Open `.env` in this folder and set `BLUESKY_APP_PASSWORD`. The handle is already set to `oninews.bsky.social`.
 5. Restart `start.ps1`, open [http://127.0.0.1:5000](http://127.0.0.1:5000), and click **Check connection**.

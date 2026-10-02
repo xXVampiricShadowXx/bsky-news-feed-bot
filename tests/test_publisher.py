@@ -80,6 +80,20 @@ class PostingTests(unittest.TestCase):
             publisher._record_key("http://www.example.com/story"),
         )
 
+    def test_record_key_is_a_valid_tid(self):
+        seen = "2026-10-02T03:43:29+00:00"
+        key = publisher._record_key(self.article, seen)
+        self.assertRegex(key, publisher._TID_PATTERN)
+        self.assertEqual(key, publisher._record_key("http://www.example.com/story", seen))
+        self.assertNotEqual(key, publisher._record_key("https://example.com/other", seen))
+        self.assertRegex(publisher._record_key(self.article), publisher._TID_PATTERN)
+        self.assertRegex(publisher._record_key(self.article, "not a date"), publisher._TID_PATTERN)
+        try:
+            from atproto_client.models.string_formats import validate_tid
+        except ImportError:
+            return
+        validate_tid(key, None)
+
     def test_lost_response_recovers_existing_post(self):
         self.client.com.atproto.repo.create_record = lambda data: (_ for _ in ()).throw(
             TimeoutError("response lost")

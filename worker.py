@@ -167,6 +167,7 @@ class BotWorker:
                     headline=item["headline"],
                     source_name=item["source_name"],
                     credit=item["credit"],
+                    first_seen_at=item["created_at"],
                     article_url=item["article_url"],
                     logo_path=logo_path,
                     logo_alt=item["logo_alt"],
