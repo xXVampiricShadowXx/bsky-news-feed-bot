@@ -1,5 +1,7 @@
 .env
 .venv/
+.vs/
+logs/
 __pycache__/
 *.py[cod]
 instance/

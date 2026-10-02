@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import threading
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterator
 
@@ -17,30 +18,42 @@ INSTANCE_DIR = Path(os.getenv("BOT_DATA_DIR", str(BASE_DIR / "instance"))).resol
 LOGO_DIR = INSTANCE_DIR / "logos"
 DB_PATH = INSTANCE_DIR / "bot.sqlite3"
 
+# One SQLite connection shared by the whole app (the background worker and every
+# web request), instead of opening and closing a new connection on every db.* call.
+# The lock makes threads take turns, so their reads and writes never interleave.
+_conn: sqlite3.Connection | None = None
+_conn_lock = threading.RLock()
+
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-@contextmanager
-def connection() -> Iterator[sqlite3.Connection]:
-    INSTANCE_DIR.mkdir(parents=True, exist_ok=True)
-    LOGO_DIR.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH, timeout=20)
+def _connect() -> sqlite3.Connection:
+    conn = sqlite3.connect(DB_PATH, timeout=20, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA journal_mode = WAL")
-    try:
-        yield conn
-        conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
-    finally:
-        conn.close()
+    return conn
+
+
+@contextmanager
+def connection() -> Iterator[sqlite3.Connection]:
+    global _conn
+    with _conn_lock:
+        if _conn is None:
+            _conn = _connect()
+        try:
+            yield _conn
+            _conn.commit()
+        except Exception:
+            _conn.rollback()
+            raise
 
 
 def init_db() -> None:
+    INSTANCE_DIR.mkdir(parents=True, exist_ok=True)
+    LOGO_DIR.mkdir(parents=True, exist_ok=True)
     with connection() as conn:
         conn.executescript(
             """
@@ -102,28 +115,41 @@ def init_db() -> None:
             CREATE INDEX IF NOT EXISTS idx_events_created ON events(created_at DESC);
             """
         )
-        existing_items = conn.execute(
-            "SELECT id, article_url, status, created_at FROM items ORDER BY id"
-        ).fetchall()
-        grouped: dict[str, list[sqlite3.Row]] = {}
-        for item in existing_items:
-            story_key = canonical_story_key(item["article_url"])
-            if not story_key:
-                continue
-            grouped.setdefault(story_key, []).append(item)
-            conn.execute(
-                "INSERT OR IGNORE INTO seen_stories(story_key, first_seen_at) VALUES(?, ?)",
-                (story_key, item["created_at"]),
-            )
-        for rows in grouped.values():
-            pending_rows = [row for row in rows if row["status"] == "pending"]
-            has_seen_nonpending_copy = any(row["status"] != "pending" for row in rows)
-            duplicates = pending_rows if has_seen_nonpending_copy else pending_rows[1:]
-            for duplicate in duplicates:
+
+        # One-time backfill: rebuild seen_stories/duplicate status from whatever
+        # is already in items. Only needs to run once ever, so it's gated behind
+        # a settings flag instead of re-scanning the whole items table on every
+        # single startup.
+        already_migrated = conn.execute(
+            "SELECT value FROM settings WHERE key = 'dedup_migrated'"
+        ).fetchone()
+        if not already_migrated:
+            existing_items = conn.execute(
+                "SELECT id, article_url, status, created_at FROM items ORDER BY id"
+            ).fetchall()
+            grouped: dict[str, list[sqlite3.Row]] = {}
+            for item in existing_items:
+                story_key = canonical_story_key(item["article_url"])
+                if not story_key:
+                    continue
+                grouped.setdefault(story_key, []).append(item)
                 conn.execute(
-                    "UPDATE items SET status = 'duplicate' WHERE id = ?",
-                    (duplicate["id"],),
+                    "INSERT OR IGNORE INTO seen_stories(story_key, first_seen_at) VALUES(?, ?)",
+                    (story_key, item["created_at"]),
                 )
+            for rows in grouped.values():
+                pending_rows = [row for row in rows if row["status"] == "pending"]
+                has_seen_nonpending_copy = any(row["status"] != "pending" for row in rows)
+                duplicates = pending_rows if has_seen_nonpending_copy else pending_rows[1:]
+                for duplicate in duplicates:
+                    conn.execute(
+                        "UPDATE items SET status = 'duplicate' WHERE id = ?",
+                        (duplicate["id"],),
+                    )
+            conn.execute(
+                "INSERT OR IGNORE INTO settings(key, value) VALUES('dedup_migrated', '1')"
+            )
+
         conn.execute(
             "INSERT OR IGNORE INTO settings(key, value) VALUES('autopost_enabled', '0')"
         )
@@ -307,34 +333,74 @@ def delete_feed(feed_id: int) -> None:
         conn.execute("DELETE FROM feeds WHERE id = ?", (feed_id,))
 
 
-def store_item(feed_id: int, item: dict, status: str) -> bool:
+def store_feed_items(
+    feed_id: int,
+    items: list[dict],
+    status: str,
+    *,
+    etag: str | None,
+    last_modified: str | None,
+) -> list[tuple[int, str]]:
+    """Store a fetched feed and its metadata atomically; return new (id, status) pairs."""
     with connection() as conn:
+        feed = conn.execute("SELECT enabled FROM feeds WHERE id = ?", (feed_id,)).fetchone()
+        if not feed or not feed["enabled"]:
+            return []
         auto_post = conn.execute(
             "SELECT value FROM settings WHERE key = 'autopost_enabled'"
         ).fetchone()
         if status == "pending" and (not auto_post or auto_post["value"] != "1"):
             status = "paused"
-        seen = conn.execute(
-            "INSERT OR IGNORE INTO seen_stories(story_key, first_seen_at) VALUES(?, ?)",
-            (item["key"], utc_now()),
+        now = utc_now()
+        inserted: list[tuple[int, str]] = []
+        for item in items:
+            seen = conn.execute(
+                "INSERT OR IGNORE INTO seen_stories(story_key, first_seen_at) VALUES(?, ?)",
+                (item["key"], now),
+            )
+            if seen.rowcount != 1:
+                continue
+            cursor = conn.execute(
+                """INSERT OR IGNORE INTO items
+                   (feed_id, item_key, headline, article_url, published_at, status, created_at)
+                   VALUES(?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    feed_id,
+                    item["key"],
+                    item["headline"],
+                    item["url"],
+                    item.get("published_at"),
+                    status,
+                    now,
+                ),
+            )
+            if cursor.rowcount == 1:
+                inserted.append((int(cursor.lastrowid), status))
+        conn.execute(
+            """UPDATE feeds SET etag = ?, last_modified = ?, last_checked = ?, last_error = NULL
+               WHERE id = ?""",
+            (etag, last_modified, now, feed_id),
         )
-        if seen.rowcount != 1:
-            return False
-        cursor = conn.execute(
-            """INSERT OR IGNORE INTO items
-               (feed_id, item_key, headline, article_url, published_at, status, created_at)
-               VALUES(?, ?, ?, ?, ?, ?, ?)""",
-            (
-                feed_id,
-                item["key"],
-                item["headline"],
-                item["url"],
-                item.get("published_at"),
-                status,
-                utc_now(),
-            ),
-        )
-        return cursor.rowcount == 1
+        return inserted
+
+
+def stagger_pending(item_ids: list[int], gap_seconds: float) -> None:
+    """Space newly queued stories oldest-first, regardless of feed completion order."""
+    if len(item_ids) < 2:
+        return
+    with connection() as conn:
+        placeholders = ",".join("?" for _ in item_ids)
+        ordered_ids = [
+            row["id"] for row in conn.execute(
+                f"""SELECT id FROM items WHERE status = 'pending' AND id IN ({placeholders})
+                    ORDER BY COALESCE(published_at, created_at), id""",
+                item_ids,
+            )
+        ]
+        now = datetime.now(timezone.utc)
+        for i, item_id in enumerate(ordered_ids[1:], start=1):
+            due_at = (now + timedelta(seconds=gap_seconds * i)).isoformat(timespec="seconds")
+            conn.execute("UPDATE items SET next_attempt_at = ? WHERE id = ?", (due_at, item_id))
 
 
 def pending_items(limit: int = 10) -> list[sqlite3.Row]:

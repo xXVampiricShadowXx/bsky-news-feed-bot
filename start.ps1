@@ -24,8 +24,36 @@ if ($LASTEXITCODE -ne 0) {
     throw 'Could not install dependencies. Check your internet connection and try again.'
 }
 
+$logDir = Join-Path $PSScriptRoot 'logs'
+New-Item -ItemType Directory -Force -Path $logDir | Out-Null
+$logFile = Join-Path $logDir ('bot-{0}.log' -f (Get-Date -Format 'yyyy-MM-dd'))
+
 Write-Host ''
 Write-Host 'Dashboard: http://127.0.0.1:5000' -ForegroundColor Green
 Write-Host 'Keep this PowerShell window open while automatic posting is enabled.' -ForegroundColor DarkGray
+Write-Host "Logging this session to $logFile" -ForegroundColor DarkGray
 Write-Host ''
-& $pythonExe app.py
+
+"" | Out-File -FilePath $logFile -Append
+"===== Session started $(Get-Date -Format 's') =====" | Out-File -FilePath $logFile -Append
+
+# Flask/Werkzeug write routine startup and request info to the error stream, not just
+# real errors. With $ErrorActionPreference = 'Stop', PowerShell treats ANY line python.exe
+# sends there (once merged via 2>&1) as fatal and kills the app immediately - so relax
+# that just for this one long-running command, or the server dies the instant it prints
+# its normal startup banner.
+$ErrorActionPreference = 'Continue'
+& $pythonExe -u app.py 2>&1 | Tee-Object -FilePath $logFile -Append
+$exitCode = $LASTEXITCODE
+$ErrorActionPreference = 'Stop'
+
+"===== Session ended $(Get-Date -Format 's') (exit code $exitCode) =====" | Out-File -FilePath $logFile -Append
+
+Write-Host ''
+if ($exitCode -ne 0) {
+    Write-Host "app.py stopped on its own with an error (exit code $exitCode)." -ForegroundColor Red
+} else {
+    Write-Host 'app.py stopped.' -ForegroundColor Yellow
+}
+Write-Host "Full output from this run was saved to: $logFile" -ForegroundColor DarkGray
+Read-Host 'Press Enter to close this window'

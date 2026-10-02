@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import threading
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 
 import db
@@ -10,7 +12,8 @@ from feeds import fetch_snapshot
 from publisher import BlueskyPublisher
 
 
-POLL_SECONDS = 90
+POLL_SECONDS = 90  # how often we check feeds for new stories
+POST_CHECK_SECONDS = 5  # how often we check for anything due to post right now
 MAX_POST_ATTEMPTS = 8
 RETRY_MINUTES = [1, 5, 15, 60, 360, 720, 1440]
 
@@ -19,24 +22,39 @@ class BotWorker:
     def __init__(self) -> None:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self._post_thread: threading.Thread | None = None
         self._publisher = BlueskyPublisher()
+        self._caught_up_feed_ids: set[int] = set()
+        self._poll_lock = threading.Lock()
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
             return
         self._stop.clear()
-        self._thread = threading.Thread(target=self._run, name="rss-publisher", daemon=True)
+        self._thread = threading.Thread(target=self._run, name="rss-poller", daemon=True)
+        self._post_thread = threading.Thread(
+            target=self._run_posts, name="bluesky-publisher", daemon=True
+        )
         self._thread.start()
+        self._post_thread.start()
 
     def _run(self) -> None:
         while not self._stop.is_set():
+            started_at = time.monotonic()
             try:
                 self.poll_enabled_feeds()
+            except Exception as exc:
+                db.add_event("error", f"Feed poll recovered from an unexpected error: {exc}")
+            self._stop.wait(max(0, POLL_SECONDS - (time.monotonic() - started_at)))
+
+    def _run_posts(self) -> None:
+        while not self._stop.is_set():
+            try:
                 if db.setting("autopost_enabled", "0") == "1":
                     self.publish_pending()
-            except Exception as exc:  # Keep the worker alive after an unexpected feed/API error.
-                db.add_event("error", f"Worker recovered from an unexpected error: {exc}")
-            self._stop.wait(POLL_SECONDS)
+            except Exception as exc:
+                db.add_event("error", f"Publisher recovered from an unexpected error: {exc}")
+            self._stop.wait(POST_CHECK_SECONDS)
 
     def activate_feed(self, feed_id: int) -> int:
         feed = db.get_feed(feed_id)
@@ -49,6 +67,7 @@ class BotWorker:
             last_modified=snapshot.last_modified,
             items=snapshot.entries,
         )
+        self._caught_up_feed_ids.add(feed_id)
         db.add_event(
             "info",
             f"Enabled {feed['source_name']} feed. Its current stories were set as the starting point.",
@@ -56,37 +75,84 @@ class BotWorker:
         return count
 
     def poll_enabled_feeds(self) -> None:
+        with self._poll_lock:
+            self._poll_enabled_feeds()
+
+    def _poll_enabled_feeds(self) -> None:
         auto_post = db.setting("autopost_enabled", "0") == "1"
-        for feed in db.enabled_feeds():
-            try:
-                snapshot = fetch_snapshot(
-                    feed["url"], etag=feed["etag"], last_modified=feed["last_modified"]
-                )
-                if not snapshot.not_modified:
-                    for item in snapshot.entries:
-                        status = "pending" if auto_post else "paused"
-                        inserted = db.store_item(feed["id"], item, status)
-                        if inserted and auto_post:
-                            db.add_event(
-                                "info", f"Queued a new story from {feed['source_name']}."
-                            )
-                db.update_feed_fetch(
-                    feed["id"],
-                    etag=snapshot.etag,
-                    last_modified=snapshot.last_modified,
-                )
-            except Exception as exc:
-                if feed["last_error"] != str(exc):
-                    db.add_event("error", f"Could not read {feed['source_name']} feed: {exc}")
-                db.update_feed_fetch(
-                    feed["id"],
+        feeds = db.enabled_feeds()
+        if not feeds:
+            return
+
+        # Each feed's first successful poll after startup establishes its baseline.
+        # A failed request must not make a later successful poll queue the backlog.
+        skipped = 0
+        new_pending_ids: list[int] = []
+        caught_up_now = 0
+
+        # Fetch every feed concurrently (this is the slow, network-bound part) so one
+        # slow or unresponsive feed doesn't stretch out the whole cycle for the rest.
+        # All db reads/writes below still happen on this one worker thread, in the
+        # as_completed loop, not inside the pool workers.
+        with ThreadPoolExecutor(max_workers=min(8, len(feeds))) as pool:
+            future_to_feed = {
+                pool.submit(
+                    fetch_snapshot,
+                    feed["url"],
                     etag=feed["etag"],
                     last_modified=feed["last_modified"],
-                    error=str(exc),
-                )
+                ): feed
+                for feed in feeds
+            }
+            for future in as_completed(future_to_feed):
+                feed = future_to_feed[future]
+                catching_up = feed["id"] not in self._caught_up_feed_ids
+                try:
+                    snapshot = future.result()
+                    status = "baseline" if catching_up else "pending" if auto_post else "paused"
+                    inserted = db.store_feed_items(
+                        feed["id"],
+                        [] if snapshot.not_modified else snapshot.entries,
+                        status,
+                        etag=snapshot.etag,
+                        last_modified=snapshot.last_modified,
+                    )
+                    skipped += len(inserted) if catching_up else 0
+                    queued = [item_id for item_id, actual_status in inserted if actual_status == "pending"]
+                    new_pending_ids.extend(queued)
+                    if queued:
+                        db.add_event(
+                            "info", f"Queued {len(queued)} new story(s) from {feed['source_name']}."
+                        )
+                    if catching_up:
+                        self._caught_up_feed_ids.add(feed["id"])
+                        caught_up_now += 1
+                except Exception as exc:
+                    if feed["last_error"] != str(exc):
+                        db.add_event("error", f"Could not read {feed['source_name']} feed: {exc}")
+                    db.update_feed_fetch(
+                        feed["id"],
+                        etag=feed["etag"],
+                        last_modified=feed["last_modified"],
+                        error=str(exc),
+                    )
+
+        if caught_up_now:
+            db.add_event(
+                "info",
+                f"Established a fresh starting point for {caught_up_now} feed(s): "
+                f"found {skipped} existing stories and left them unposted.",
+            )
+        if len(new_pending_ids) > 1:
+            # Schedule by publication time, not the order network requests finish.
+            gap = POLL_SECONDS / len(new_pending_ids)
+            db.stagger_pending(new_pending_ids, gap)
 
     def publish_pending(self) -> None:
-        for item in db.pending_items(limit=10):
+        # Do not read newly inserted rows until the poll has finished staggering them.
+        with self._poll_lock:
+            due_items = db.pending_items(limit=10)
+        for item in due_items:
             if db.setting("autopost_enabled", "0") != "1":
                 return
             current_feed = db.get_feed(item["feed_id"])
@@ -122,6 +188,7 @@ class BotWorker:
                     ).isoformat(timespec="seconds")
                     db.add_event(
                         "error",
-                        f"Bluesky post failed for {item['source_name']}; retrying in {delay} minutes.",
+                        f"Bluesky post failed for {item['source_name']}; retrying in {delay} "
+                        f"minutes. ({type(exc).__name__}: {exc})",
                     )
                 db.mark_post_failed(item["id"], attempts, str(exc), retry_at)

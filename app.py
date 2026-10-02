@@ -6,9 +6,15 @@ import hmac
 import io
 import os
 import secrets
+import sys
 import uuid
 from pathlib import Path
 from urllib.parse import urlsplit
+
+if os.name == "nt":
+    import msvcrt
+else:
+    import fcntl
 
 from dotenv import load_dotenv
 from flask import (
@@ -34,8 +40,61 @@ BASE_DIR = Path(__file__).resolve().parent
 load_dotenv(BASE_DIR / ".env")
 db.init_db()
 
+_instance_lock_handle = None
+
+def _ensure_single_instance() -> None:
+    """Hold an OS-managed lock so concurrent starts cannot run duplicate workers."""
+    global _instance_lock_handle
+    lock_path = db.INSTANCE_DIR / "bot.pid"
+    db.INSTANCE_DIR.mkdir(parents=True, exist_ok=True)
+    lock_path.touch(exist_ok=True)
+    _instance_lock_handle = lock_path.open("r+b")
+    _instance_lock_handle.seek(0, os.SEEK_END)
+    if _instance_lock_handle.tell() == 0:
+        _instance_lock_handle.write(b"\0")
+        _instance_lock_handle.flush()
+    _instance_lock_handle.seek(0)
+    try:
+        if os.name == "nt":
+            msvcrt.locking(_instance_lock_handle.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            fcntl.flock(_instance_lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        _instance_lock_handle.close()
+        _instance_lock_handle = None
+        sys.exit("Another copy of this bot is already running. Close that window first.")
+    _instance_lock_handle.seek(0)
+    _instance_lock_handle.write(str(os.getpid()).encode("ascii").ljust(16, b" "))
+    _instance_lock_handle.flush()
+
+
+_ensure_single_instance()
+
+
+def _ensure_dashboard_secret() -> str:
+    """Reuse DASHBOARD_SECRET from .env, or create and save one on first run.
+
+    Without this, a new random secret_key was generated on every restart, which
+    silently invalidated the session/CSRF token behind any dashboard tab that was
+    still open from before the restart (its next form submit would fail with
+    "Form expired. Reload the page and try again.").
+    """
+    existing = os.getenv("DASHBOARD_SECRET")
+    if existing:
+        return existing
+    new_secret = secrets.token_urlsafe(32)
+    env_path = BASE_DIR / ".env"
+    try:
+        with env_path.open("a", encoding="utf-8") as handle:
+            handle.write(f"\nDASHBOARD_SECRET={new_secret}\n")
+    except OSError:
+        pass  # Still usable for this run; just won't survive a restart.
+    os.environ["DASHBOARD_SECRET"] = new_secret
+    return new_secret
+
+
 app = Flask(__name__)
-app.secret_key = os.getenv("DASHBOARD_SECRET") or secrets.token_urlsafe(32)
+app.secret_key = _ensure_dashboard_secret()
 app.config["MAX_CONTENT_LENGTH"] = 10 * 1024 * 1024
 app.config["SESSION_COOKIE_HTTPONLY"] = True
 app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
