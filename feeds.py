@@ -55,6 +55,46 @@ def _published(entry) -> str | None:
         return None
 
 
+# Wire/news agencies whose copy public broadcasters often republish. Matched only
+# against the byline (author) field: summaries are full of photo captions like
+# "(AP Photo/...)" or "AFP via Getty Images" that say nothing about who wrote the text.
+_WIRE_AGENCIES: tuple[tuple[re.Pattern[str], str], ...] = (
+    # AAP first, and removed before the rest, so it is never also reported as AP.
+    (re.compile(r"\bAustralian\s+Associated\s+Press\b|\bAAP\b", re.I), "AAP"),
+    (re.compile(r"\bassociated\s+press\b|(?:^|,|\bby\s|\bvia\s|\bwith\s)\s*AP\s*$", re.I), "Associated Press"),
+    (re.compile(r"\breuters\b", re.I), "Reuters"),
+    (re.compile(r"\bagence\s+france[- ]presse\b|\bAFP\b", re.I), "AFP"),
+    (re.compile(r"\bcanadian\s+press\b", re.I), "The Canadian Press"),
+    (re.compile(r"\bPA\s+Media\b|\bPress\s+Association\b", re.I), "PA Media"),
+    (re.compile(r"\bDeutsche\s+Presse-Agentur\b|\bdpa\b"), "dpa"),
+    (re.compile(r"\bKyodo\b", re.I), "Kyodo News"),
+    (re.compile(r"\bYonhap\b", re.I), "Yonhap"),
+)
+
+
+def _byline(entry) -> str:
+    names = [entry.get("author") or ""]
+    for author in entry.get("authors") or []:
+        if isinstance(author, dict):
+            names.append(author.get("name") or "")
+    for key in ("dc_creator", "creator"):
+        names.append(str(entry.get(key) or ""))
+    return " ; ".join(_clean_text(name) for name in names if name)
+
+
+def wire_credit(byline: str) -> str | None:
+    """Return the wire agency credited in a byline, e.g. "Jane Doe, Associated Press"."""
+    found: list[str] = []
+    for name in (byline or "").split(";"):
+        remaining = name.strip()
+        for pattern, label in _WIRE_AGENCIES:
+            if pattern.search(remaining):
+                remaining = pattern.sub(" ", remaining)
+                if label not in found:
+                    found.append(label)
+    return " and ".join(found[:2]) or None
+
+
 def _article_url(link: str, base_url: str) -> str:
     if not link or not link.strip():
         return ""
@@ -76,6 +116,12 @@ _TRACKING_QUERY_KEYS = {
     "mc_eid",
     "mkt_tok",
     "wbraid",
+}
+
+
+_STABLE_ID_PATHS: dict[str, tuple[re.Pattern[str], str]] = {
+    "dw.com": (re.compile(r"/a-(\d+)$"), "/a-{}"),
+    "abc.net.au": (re.compile(r"^/news/(?:[^/]+/)*(\d{6,})$"), "/news/{}"),
 }
 
 
@@ -101,6 +147,16 @@ def canonical_story_key(url: str) -> str:
     path = parsed.path or "/"
     if path != "/":
         path = path.rstrip("/") or "/"
+
+    # Some publishers rewrite a story's headline slug while keeping its numeric id
+    # (DW: /en/<slug>/a-79401752, ABC: /news/2026-10-02/<slug>/107221348). Key on
+    # the id alone so a retitled story is not treated as a brand-new one.
+    stable_id = _STABLE_ID_PATHS.get(hostname)
+    if stable_id:
+        match = stable_id[0].search(path)
+        if match:
+            return f"https://{hostname}{stable_id[1].format(match.group(1))}"
+
     query_pairs = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
     query_pairs = [
         (key, value)
@@ -173,6 +229,7 @@ def fetch_snapshot(
                 "headline": headline[:1000],
                 "url": article_link,
                 "published_at": _published(entry),
+                "credit": wire_credit(_byline(entry)),
                 "_order": index,
             }
         )

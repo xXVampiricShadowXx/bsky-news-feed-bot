@@ -116,6 +116,28 @@ def init_db() -> None:
             """
         )
 
+        item_columns = {row["name"] for row in conn.execute("PRAGMA table_info(items)")}
+        if "credit" not in item_columns:
+            # Wire agency (e.g. "Associated Press") named in the feed's byline.
+            conn.execute("ALTER TABLE items ADD COLUMN credit TEXT")
+
+        # Story-key v2 keys some sites by article id. Register every known story under
+        # its current key too, so nothing already seen looks new and gets re-posted.
+        key_version = conn.execute(
+            "SELECT value FROM settings WHERE key = 'story_key_version'"
+        ).fetchone()
+        if not key_version or key_version["value"] != "2":
+            for item in conn.execute("SELECT article_url, created_at FROM items").fetchall():
+                story_key = canonical_story_key(item["article_url"])
+                if story_key:
+                    conn.execute(
+                        "INSERT OR IGNORE INTO seen_stories(story_key, first_seen_at) VALUES(?, ?)",
+                        (story_key, item["created_at"]),
+                    )
+            conn.execute(
+                "INSERT OR REPLACE INTO settings(key, value) VALUES('story_key_version', '2')"
+            )
+
         # One-time backfill: rebuild seen_stories/duplicate status from whatever
         # is already in items. Only needs to run once ever, so it's gated behind
         # a settings flag instead of re-scanning the whole items table on every
@@ -296,14 +318,15 @@ def enable_feed_and_seed(
                 continue
             conn.execute(
                 """INSERT OR IGNORE INTO items
-                   (feed_id, item_key, headline, article_url, published_at, status, created_at)
-                   VALUES(?, ?, ?, ?, ?, 'baseline', ?)""",
+                   (feed_id, item_key, headline, article_url, published_at, credit, status, created_at)
+                   VALUES(?, ?, ?, ?, ?, ?, 'baseline', ?)""",
                 (
                     feed_id,
                     item["key"],
                     item["headline"],
                     item["url"],
                     item.get("published_at"),
+                    item.get("credit"),
                     utc_now(),
                 ),
             )
@@ -362,14 +385,15 @@ def store_feed_items(
                 continue
             cursor = conn.execute(
                 """INSERT OR IGNORE INTO items
-                   (feed_id, item_key, headline, article_url, published_at, status, created_at)
-                   VALUES(?, ?, ?, ?, ?, ?, ?)""",
+                   (feed_id, item_key, headline, article_url, published_at, credit, status, created_at)
+                   VALUES(?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     feed_id,
                     item["key"],
                     item["headline"],
                     item["url"],
                     item.get("published_at"),
+                    item.get("credit"),
                     status,
                     now,
                 ),

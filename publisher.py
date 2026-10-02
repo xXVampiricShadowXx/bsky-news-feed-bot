@@ -118,6 +118,15 @@ def _public_url_opener() -> urllib.request.OpenerDirector:
     )
 
 
+def attribution_line(source_name: str, credit: str | None = None) -> str:
+    """"Source: PBS News, with Associated Press" - names the publisher and, when the
+    feed's byline says so, the wire service that actually wrote the story."""
+    line = f"Source: {source_name}"
+    if credit and credit.casefold() not in source_name.casefold():
+        line += f", with {credit}"
+    return line
+
+
 def _link_display_text(article_url: str) -> str:
     """Just the domain, e.g. "bbc.co.uk" - shown in the post text and clicked through
     to the real article. Long URLs (DW's especially) could otherwise burn 200+
@@ -337,8 +346,9 @@ class BlueskyPublisher:
         article_url: str,
         logo_path: Path | None,
         logo_alt: str,
+        credit: str | None = None,
     ) -> str:
-        lead = f"{headline}\n\n(Source: {source_name})\n\n"
+        lead = f"{headline}\n\n({attribution_line(source_name, credit)})\n\n"
         link_text = _link_display_text(article_url)
         if len(lead) + len(link_text) > 300:
             raise ValueError(
@@ -360,7 +370,7 @@ class BlueskyPublisher:
                 thumb_bytes = None
 
         embed_title = (og_title or headline).strip()[:300] or headline[:300]
-        embed_description = (og_description or f"via {source_name}").strip()[:1000]
+        embed_description = (og_description or attribution_line(source_name, credit)).strip()[:1000]
 
         client = self._get_client()
         rkey = _record_key(article_url)

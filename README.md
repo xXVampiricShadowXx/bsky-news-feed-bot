@@ -5,10 +5,12 @@ A local dashboard for connecting RSS or Atom news feeds to `oninews.bsky.social`
 ```text
 {full headline}
 
-(Source: {publisher name})
+(Source: {publisher name}[, with {wire service}])
 
 {article domain linking to the full article}
 ```
+
+When a feed's byline shows the story was written by a wire service (for example PBS republishing "Jane Doe, Associated Press"), the post credits both: `(Source: PBS News, with Associated Press)`. Wire credit is read only from bylines, never from photo captions. Headlines are never shortened; a story that cannot fit with full credit is left unposted.
 
 The post includes an article preview card with its image when available, falling back to the publisher's logo. Article blurbs can appear in the card description.
 
@@ -37,7 +39,7 @@ Multiple feeds can use the same publisher profile and logo. Disable a feed to st
 - Automatic posting starts paused. You must test the Bluesky connection and turn it on in the dashboard.
 - Stories discovered while auto-posting is paused are skipped. Resuming does not produce a backlog burst.
 - On each launch, the first successful fetch of each enabled feed establishes a fresh baseline. Stories found while the bot was offline are not posted retroactively.
-- A normalized article URL can only be posted once across all connected feeds, including common tracking-tag and fragment variants. This history stays in the local database even if a feed is removed. Stories published at different URLs are not assumed to be duplicates based only on similar headlines.
+- A normalized article URL can only be posted once across all connected feeds, including common tracking-tag and fragment variants. This history stays in the local database even if a feed is removed. Stories published at different URLs are not assumed to be duplicates based only on similar headlines. DW and ABC Australia stories are matched by article id, since those sites change a story's URL slug when they retitle it.
 - Each story uses a stable Bluesky record key, so a lost response or restart cannot create a duplicate post during a retry.
 - Transient Bluesky errors retry with increasing delays, up to eight attempts. A story that exceeds Bluesky's post length limit is marked failed instead of silently shortening its headline.
 - Feed errors and delivery results appear in the dashboard activity log.
