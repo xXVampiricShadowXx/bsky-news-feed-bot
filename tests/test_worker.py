@@ -75,6 +75,33 @@ class FeedStorageTests(unittest.TestCase):
         )
         self.assertEqual("pending", inserted[0][1])
 
+    def test_same_story_from_another_url_is_marked_duplicate(self):
+        db.set_setting("autopost_enabled", "1")
+        first = dict(story("a"), headline="Israel-bound flight diverted after fight between pilots")
+        repeat = dict(story("b"), headline="Flight to Israel diverts to Saudi Arabia as pilots fight")
+        development = dict(story("c"), headline="Israel names suspect in flight attack")
+        statuses = [s for _, s in db.store_feed_items(
+            self.feed_id, [first, repeat, development], "pending", etag=None, last_modified=None
+        )]
+        self.assertEqual(["pending", "duplicate", "pending"], statuses)
+        with db.connection() as conn:
+            reason = conn.execute("SELECT last_error FROM items WHERE status = 'duplicate'").fetchone()[0]
+        self.assertIn("Israel-bound flight diverted", reason)
+
+    def test_backup_is_readable_and_old_copies_are_pruned(self):
+        backup_dir = db.INSTANCE_DIR / "backups"
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        for i in range(3):
+            (backup_dir / f"bot-2000010{i}-000000.sqlite3").write_bytes(b"")
+        target = db.backup_database(keep=2)
+        remaining = sorted(p.name for p in backup_dir.glob("bot-*.sqlite3"))
+        self.assertEqual(2, len(remaining))
+        self.assertIn(target.name, remaining)
+        import sqlite3
+        copy = sqlite3.connect(target)
+        self.addCleanup(copy.close)
+        self.assertEqual(1, copy.execute("SELECT COUNT(*) FROM feeds").fetchone()[0])
+
     def test_pausing_or_disabling_feed_prevents_late_queueing(self):
         db.set_setting("autopost_enabled", "0")
         inserted = db.store_feed_items(
@@ -128,6 +155,7 @@ class FeedStorageTests(unittest.TestCase):
 class WorkerTests(unittest.TestCase):
     def setUp(self):
         self.bot = worker.BotWorker()
+        self.bot._last_backup_at = worker.time.time()  # never touch the real database
         self.feed = {
             "id": 12, "url": "https://example.com/rss", "etag": None,
             "last_modified": None, "last_error": None, "source_name": "Example",

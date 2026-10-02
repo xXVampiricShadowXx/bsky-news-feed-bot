@@ -16,6 +16,7 @@ POLL_SECONDS = 90  # how often we check feeds for new stories
 POST_CHECK_SECONDS = 5  # how often we check for anything due to post right now
 MAX_POST_ATTEMPTS = 8
 RETRY_MINUTES = [1, 5, 15, 60, 360, 720, 1440]
+BACKUP_SECONDS = 24 * 3600
 
 
 class BotWorker:
@@ -29,6 +30,7 @@ class BotWorker:
         self.started_at = time.time()
         self.last_poll_finished_at: float | None = None
         self.last_publish_check_at: float | None = None
+        self._last_backup_at: float | None = None
 
     def health(self) -> dict:
         """Liveness of both loops. A loop is stalled if it hasn't completed a cycle
@@ -67,8 +69,18 @@ class BotWorker:
                 self.poll_enabled_feeds()
             except Exception as exc:
                 db.add_event("error", f"Feed poll recovered from an unexpected error: {exc}")
+            self._maybe_backup()
             self.last_poll_finished_at = time.time()
             self._stop.wait(max(0, POLL_SECONDS - (time.monotonic() - started_at)))
+
+    def _maybe_backup(self) -> None:
+        if self._last_backup_at and time.time() - self._last_backup_at < BACKUP_SECONDS:
+            return
+        self._last_backup_at = time.time()
+        try:
+            db.backup_database()
+        except Exception as exc:
+            db.add_event("error", f"Daily database backup failed: {exc}")
 
     def _run_posts(self) -> None:
         while not self._stop.is_set():

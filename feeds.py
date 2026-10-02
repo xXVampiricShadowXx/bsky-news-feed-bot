@@ -8,6 +8,7 @@ import re
 import urllib.error
 import urllib.parse
 import urllib.request
+import zlib
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -124,6 +125,7 @@ _TRACKING_QUERY_KEYS = {
 _STABLE_ID_PATHS: dict[str, tuple[re.Pattern[str], str]] = {
     "dw.com": (re.compile(r"/a-(\d+)$"), "/a-{}"),
     "abc.net.au": (re.compile(r"^/news/(?:[^/]+/)*(\d{6,})$"), "/news/{}"),
+    "rte.ie": (re.compile(r"^/news/(?:[^/]+/)*(\d{6,})-[^/]*$"), "/news/{}"),
 }
 
 
@@ -196,6 +198,7 @@ def fetch_snapshot(
     headers = {
         "User-Agent": USER_AGENT,
         "Accept": "application/atom+xml, application/rss+xml, application/xml, text/xml, */*;q=0.8",
+        "Accept-Encoding": "gzip",
     }
     if etag:
         headers["If-None-Match"] = etag
@@ -217,6 +220,16 @@ def fetch_snapshot(
         raise ValueError(f"Feed server returned HTTP {exc.code}.") from exc
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         raise ValueError(f"Could not fetch feed: {exc}") from exc
+
+    # Some servers (UN News) gzip the body even without a Content-Encoding header.
+    if raw[:2] == b"\x1f\x8b":
+        try:
+            inflater = zlib.decompressobj(wbits=16 + zlib.MAX_WBITS)
+            raw = inflater.decompress(raw, 4_000_001)
+        except zlib.error as exc:
+            raise ValueError(f"Feed could not be decompressed: {exc}") from exc
+        if len(raw) > 4_000_000:
+            raise ValueError("Feed is larger than 4 MB; refusing to load it.")
 
     parsed = feedparser.parse(raw)
     if parsed.bozo and not parsed.entries:

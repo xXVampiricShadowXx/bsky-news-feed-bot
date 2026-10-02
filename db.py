@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterator
 
+import similarity
 from feeds import canonical_story_key
 
 
@@ -17,6 +18,7 @@ BASE_DIR = Path(__file__).resolve().parent
 INSTANCE_DIR = Path(os.getenv("BOT_DATA_DIR", str(BASE_DIR / "instance"))).resolve()
 LOGO_DIR = INSTANCE_DIR / "logos"
 DB_PATH = INSTANCE_DIR / "bot.sqlite3"
+STORY_KEY_VERSION = "3"
 
 # One SQLite connection shared by the whole app (the background worker and every
 # web request), instead of opening and closing a new connection on every db.* call.
@@ -49,6 +51,25 @@ def connection() -> Iterator[sqlite3.Connection]:
         except Exception:
             _conn.rollback()
             raise
+
+
+def backup_database(keep: int = 7) -> Path:
+    """Write a consistent online snapshot to instance/backups and prune old ones."""
+    global _conn
+    backup_dir = INSTANCE_DIR / "backups"
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    target = backup_dir / f"bot-{datetime.now():%Y%m%d-%H%M%S}.sqlite3"
+    destination = sqlite3.connect(target)
+    try:
+        with _conn_lock:
+            if _conn is None:
+                _conn = _connect()
+            _conn.backup(destination)
+    finally:
+        destination.close()
+    for old in sorted(backup_dir.glob("bot-*.sqlite3"))[:-keep]:
+        old.unlink(missing_ok=True)
+    return target
 
 
 def init_db() -> None:
@@ -121,12 +142,13 @@ def init_db() -> None:
             # Wire agency (e.g. "Associated Press") named in the feed's byline.
             conn.execute("ALTER TABLE items ADD COLUMN credit TEXT")
 
-        # Story-key v2 keys some sites by article id. Register every known story under
-        # its current key too, so nothing already seen looks new and gets re-posted.
+        # Story-key versions key some sites by article id (v2: DW, ABC; v3: RTÉ).
+        # Register every known story under its current key too, so nothing already
+        # seen looks new and gets re-posted.
         key_version = conn.execute(
             "SELECT value FROM settings WHERE key = 'story_key_version'"
         ).fetchone()
-        if not key_version or key_version["value"] != "2":
+        if not key_version or key_version["value"] != STORY_KEY_VERSION:
             for item in conn.execute("SELECT article_url, created_at FROM items").fetchall():
                 story_key = canonical_story_key(item["article_url"])
                 if story_key:
@@ -135,7 +157,8 @@ def init_db() -> None:
                         (story_key, item["created_at"]),
                     )
             conn.execute(
-                "INSERT OR REPLACE INTO settings(key, value) VALUES('story_key_version', '2')"
+                "INSERT OR REPLACE INTO settings(key, value) VALUES('story_key_version', ?)",
+                (STORY_KEY_VERSION,),
             )
 
         # One-time backfill: rebuild seen_stories/duplicate status from whatever
@@ -369,7 +392,11 @@ def store_feed_items(
 ) -> list[tuple[int, str]]:
     """Store a fetched feed and its metadata atomically; return new (id, status) pairs."""
     with connection() as conn:
-        feed = conn.execute("SELECT enabled FROM feeds WHERE id = ?", (feed_id,)).fetchone()
+        feed = conn.execute(
+            """SELECT f.enabled, s.name FROM feeds f JOIN sources s ON s.id = f.source_id
+               WHERE f.id = ?""",
+            (feed_id,),
+        ).fetchone()
         if not feed or not feed["enabled"]:
             return []
         auto_post = conn.execute(
@@ -382,6 +409,7 @@ def store_feed_items(
         ).fetchone()
         topic_filter = bool(topic_row and topic_row["value"] == "1")
         now = utc_now()
+        recent_headlines: list[tuple[frozenset[str], str, str]] | None = None
         inserted: list[tuple[int, str]] = []
         for item in items:
             seen = conn.execute(
@@ -393,6 +421,16 @@ def store_feed_items(
             item_status, reason = status, None
             if topic_filter and status != "baseline" and item.get("geopolitical") is False:
                 item_status, reason = "filtered", f"Skipped, {item.get('topic_reason') or 'not geopolitical'}"
+            tokens = similarity.headline_tokens(item["headline"])
+            if item_status in {"pending", "paused"}:
+                if recent_headlines is None:
+                    recent_headlines = _recent_headlines(conn)
+                match = next((r for r in recent_headlines if similarity.same_story(tokens, r[0])), None)
+                if match:
+                    item_status = "duplicate"
+                    reason = f"Same story already covered ({match[2]}): {match[1]}"[:500]
+            if recent_headlines is not None and item_status in {"pending", "paused"}:
+                recent_headlines.append((tokens, item["headline"], feed["name"]))
             cursor = conn.execute(
                 """INSERT OR IGNORE INTO items
                    (feed_id, item_key, headline, article_url, published_at, credit, status,
@@ -418,6 +456,20 @@ def store_feed_items(
             (etag, last_modified, now, feed_id),
         )
         return inserted
+
+
+def _recent_headlines(conn: sqlite3.Connection) -> list[tuple[frozenset[str], str, str]]:
+    """Headlines posted or queued recently, for same-story detection."""
+    cutoff = (
+        datetime.now(timezone.utc) - timedelta(hours=similarity.WINDOW_HOURS)
+    ).isoformat(timespec="seconds")
+    rows = conn.execute(
+        """SELECT i.headline, s.name FROM items i JOIN feeds f ON f.id = i.feed_id
+           JOIN sources s ON s.id = f.source_id
+           WHERE i.status IN ('posted', 'pending', 'paused') AND i.created_at >= ?""",
+        (cutoff,),
+    ).fetchall()
+    return [(similarity.headline_tokens(r["headline"]), r["headline"], r["name"]) for r in rows]
 
 
 def stagger_pending(item_ids: list[int], gap_seconds: float) -> None:
