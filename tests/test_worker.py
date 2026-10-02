@@ -58,6 +58,23 @@ class FeedStorageTests(unittest.TestCase):
         self.assertEqual("etag-2", db.get_feed(self.feed_id)["etag"])
         self.assertEqual(2, len(db.pending_items()))
 
+    def test_off_topic_stories_are_filtered_not_queued(self):
+        db.set_setting("autopost_enabled", "1")
+        off = dict(story("off"), geopolitical=False, topic_reason="not geopolitical")
+        on = dict(story("on"), geopolitical=True)
+        inserted = dict((s, i) for i, s in db.store_feed_items(
+            self.feed_id, [off, on], "pending", etag=None, last_modified=None
+        ))
+        self.assertIn("filtered", inserted)
+        self.assertIn("pending", inserted)
+        self.assertEqual(1, len(db.pending_items()))
+        db.set_setting("geopolitics_only", "0")
+        inserted = db.store_feed_items(
+            self.feed_id, [dict(off, key="k2", url="https://example.com/k2")], "pending",
+            etag=None, last_modified=None,
+        )
+        self.assertEqual("pending", inserted[0][1])
+
     def test_pausing_or_disabling_feed_prevents_late_queueing(self):
         db.set_setting("autopost_enabled", "0")
         inserted = db.store_feed_items(

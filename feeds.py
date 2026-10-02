@@ -13,6 +13,8 @@ from datetime import datetime, timezone
 
 import feedparser
 
+import topics
+
 
 USER_AGENT = "OniNewsFeedBot/0.1 (+local RSS reader)"
 TIMEOUT_SECONDS = 25
@@ -171,6 +173,19 @@ def canonical_story_key(url: str) -> str:
     return urllib.parse.urlunsplit(("https", hostname, path, query, ""))
 
 
+_SPORT_TERMS = {"sport", "sports"}
+_SPORT_PATH_SEGMENTS = {"sport", "sports", "football"}
+
+
+def is_sport(entry, article_url: str) -> bool:
+    """Sport coverage falls outside the bot's global/breaking news remit."""
+    for tag in entry.get("tags") or []:
+        if str(tag.get("term") or "").strip().lower() in _SPORT_TERMS:
+            return True
+    segments = urllib.parse.urlsplit(article_url).path.lower().split("/")
+    return any(segment in _SPORT_PATH_SEGMENTS for segment in segments)
+
+
 def fetch_snapshot(
     url: str,
     *,
@@ -221,6 +236,11 @@ def fetch_snapshot(
         article_link = _article_url(raw_link, response_url)
         if not headline or not article_link:
             continue
+        if is_sport(entry, article_link):
+            continue
+        summary = _clean_text(entry.get("summary"))[:600]
+        tags = [str(t.get("term") or "") for t in entry.get("tags") or []]
+        relevant, _score, topic_reason = topics.assess(headline, summary, tags, article_link)
         entries.append(
             {
                 # Use a normalized key for deduplication, but preserve the original
@@ -230,6 +250,8 @@ def fetch_snapshot(
                 "url": article_link,
                 "published_at": _published(entry),
                 "credit": wire_credit(_byline(entry)),
+                "geopolitical": relevant,
+                "topic_reason": topic_reason,
                 "_order": index,
             }
         )

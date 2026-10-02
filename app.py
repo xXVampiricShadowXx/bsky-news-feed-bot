@@ -187,6 +187,7 @@ def index():
         bluesky_handle=publisher.handle,
         bluesky_configured=publisher.configured,
         autopost_enabled=db.setting("autopost_enabled", "0") == "1",
+        geopolitics_only=db.setting("geopolitics_only", "1") == "1",
     )
 
 
@@ -336,6 +337,16 @@ def toggle_autopost():
                 f"Could not start automatic posting: {exc} Check the local .env file and restart the app.",
                 "error",
             )
+    return redirect(url_for("index"))
+
+
+@app.post("/settings/toggle-geopolitics")
+def toggle_geopolitics():
+    enabled = db.setting("geopolitics_only", "1") == "1"
+    db.set_setting("geopolitics_only", "0" if enabled else "1")
+    message = "Posting all new stories." if enabled else "Posting geopolitics stories only."
+    db.add_event("info", f"Topic filter changed: {message}")
+    flash(message, "success")
     return redirect(url_for("index"))
 
 

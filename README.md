@@ -87,6 +87,12 @@ To remove the auto-start task, run `install_autostart.ps1 -Uninstall`. To stop t
 
 The bot posts only while this computer is on and signed in. To run around the clock, host it on an always-on server, keep the `.env` credentials private, and restrict access to the dashboard.
 
+## Geopolitics focus
+
+The account covers geopolitics, so by default only geopolitical stories are posted. These include war and conflict, diplomacy, sanctions and trade disputes, international bodies, elections, heads of state, and relations between countries. `topics.py` scores each story's headline, feed summary, and feed categories against transparent keyword lists. A story needs at least one core signal (such as a conflict term, an international body, a world leader, a geopolitical feed category, or two countries in the headline) and enough total weight. Sport, entertainment, weather, and local crime are vetoed unless the geopolitical signal is overwhelming. Sport stories are always skipped.
+
+Skipped stories are kept in the database with status `filtered` and a reason (for example `Skipped, not geopolitical (only: australia)`), so tuning is easy to review. The **Geopolitics only** button on the dashboard turns the filter off or back on.
+
 ## Current sources
 
 All sources are public broadcasters, non-profits, trust-owned publishers, or intergovernmental bodies:

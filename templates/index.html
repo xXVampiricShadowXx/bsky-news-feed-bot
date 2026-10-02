@@ -77,6 +77,12 @@
               <button class="button button-primary" type="submit">Start auto-posting</button>
             {% endif %}
           </form>
+          <form method="post" action="{{ url_for('toggle_geopolitics') }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button class="button button-secondary" type="submit">
+              {{ 'Geopolitics only: on' if geopolitics_only else 'Geopolitics only: off' }}
+            </button>
+          </form>
         </div>
       </article>
 

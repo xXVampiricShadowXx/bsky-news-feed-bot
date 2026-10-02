@@ -6,6 +6,14 @@ import feeds
 import publisher
 
 
+class SportFilterTests(unittest.TestCase):
+    def test_skips_sport_by_tag_or_path(self):
+        self.assertTrue(feeds.is_sport({"tags": [{"term": "Sport"}]}, "https://abc.net.au/news/1/x/2"))
+        self.assertTrue(feeds.is_sport({}, "https://www.bbc.com/sport/football/123"))
+        self.assertTrue(feeds.is_sport({}, "https://www.rnz.co.nz/news/sport/1"))
+        self.assertFalse(feeds.is_sport({"tags": [{"term": "World Politics"}]}, "https://abc.net.au/news/2026/sportswashing-row/9"))
+
+
 class WireCreditTests(unittest.TestCase):
     def test_detects_wire_agencies_in_bylines(self):
         cases = {

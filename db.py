@@ -175,6 +175,9 @@ def init_db() -> None:
         conn.execute(
             "INSERT OR IGNORE INTO settings(key, value) VALUES('autopost_enabled', '0')"
         )
+        conn.execute(
+            "INSERT OR IGNORE INTO settings(key, value) VALUES('geopolitics_only', '1')"
+        )
 
 
 def setting(key: str, default: str = "") -> str:
@@ -374,6 +377,10 @@ def store_feed_items(
         ).fetchone()
         if status == "pending" and (not auto_post or auto_post["value"] != "1"):
             status = "paused"
+        topic_row = conn.execute(
+            "SELECT value FROM settings WHERE key = 'geopolitics_only'"
+        ).fetchone()
+        topic_filter = bool(topic_row and topic_row["value"] == "1")
         now = utc_now()
         inserted: list[tuple[int, str]] = []
         for item in items:
@@ -383,10 +390,14 @@ def store_feed_items(
             )
             if seen.rowcount != 1:
                 continue
+            item_status, reason = status, None
+            if topic_filter and status != "baseline" and item.get("geopolitical") is False:
+                item_status, reason = "filtered", f"Skipped, {item.get('topic_reason') or 'not geopolitical'}"
             cursor = conn.execute(
                 """INSERT OR IGNORE INTO items
-                   (feed_id, item_key, headline, article_url, published_at, credit, status, created_at)
-                   VALUES(?, ?, ?, ?, ?, ?, ?, ?)""",
+                   (feed_id, item_key, headline, article_url, published_at, credit, status,
+                    last_error, created_at)
+                   VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     feed_id,
                     item["key"],
@@ -394,12 +405,13 @@ def store_feed_items(
                     item["url"],
                     item.get("published_at"),
                     item.get("credit"),
-                    status,
+                    item_status,
+                    reason,
                     now,
                 ),
             )
             if cursor.rowcount == 1:
-                inserted.append((int(cursor.lastrowid), status))
+                inserted.append((int(cursor.lastrowid), item_status))
         conn.execute(
             """UPDATE feeds SET etag = ?, last_modified = ?, last_checked = ?, last_error = NULL
                WHERE id = ?""",
