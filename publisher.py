@@ -4,12 +4,9 @@ login/session handling."""
 from __future__ import annotations
 
 import io
-import hashlib
 import os
-import re
 import threading
 import urllib.request
-from datetime import datetime, timezone
 from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import urljoin, urlsplit
@@ -18,34 +15,14 @@ from atproto import Client, client_utils, models
 from atproto_client.exceptions import BadRequestError, LoginRequiredError, UnauthorizedError
 from PIL import Image, ImageOps, UnidentifiedImageError
 
-from feeds import canonical_story_key
-
 # Error names Bluesky uses when it is telling us the login itself is no good.
 _SESSION_ERROR_NAMES = {"ExpiredToken", "InvalidToken", "AuthenticationRequired"}
 
-from config import USER_AGENT
+USER_AGENT = "BskyNewsFeedBot/0.1 (+local RSS reader)"
 ARTICLE_FETCH_TIMEOUT = 10
 MAX_HTML_BYTES = 1_500_000
 MAX_THUMB_DOWNLOAD_BYTES = 8_000_000
-MAX_THUMB_PIXELS = 20_000_000
 BLUESKY_IMAGE_CAP = 1_900_000  # keep just under Bluesky's current 2 MB image cap
-
-
-from netsafe import (  # noqa: F401 - re-exported for callers and tests
-    _connect_public_socket,
-    _public_address_info,
-    _public_url_opener,
-    _validate_public_http_url,
-)
-
-
-def attribution_line(source_name: str, credit: str | None = None) -> str:
-    """"Source: PBS News, with Associated Press" - names the publisher and, when the
-    feed's byline says so, the wire service that actually wrote the story."""
-    line = f"Source: {source_name}"
-    if credit and credit.casefold() not in source_name.casefold():
-        line += f", with {credit}"
-    return line
 
 
 def _link_display_text(article_url: str) -> str:
@@ -117,11 +94,10 @@ def _fetch_article_preview(article_url: str) -> tuple[str | None, str | None, by
     doesn't get posted, only the reason it posts with the source's logo instead.
     """
     try:
-        _validate_public_http_url(article_url)
         request = urllib.request.Request(
             article_url, headers={"User-Agent": USER_AGENT, "Accept": "text/html,*/*;q=0.8"}
         )
-        with _public_url_opener().open(request, timeout=ARTICLE_FETCH_TIMEOUT) as response:
+        with urllib.request.urlopen(request, timeout=ARTICLE_FETCH_TIMEOUT) as response:
             content_type = response.headers.get("Content-Type", "")
             if "html" not in content_type.lower() and content_type:
                 return None, None, None
@@ -149,11 +125,8 @@ def _fetch_article_preview(article_url: str) -> tuple[str | None, str | None, by
     if parser.og_image:
         try:
             image_url = urljoin(final_url, parser.og_image)
-            _validate_public_http_url(image_url)
             img_request = urllib.request.Request(image_url, headers={"User-Agent": USER_AGENT})
-            with _public_url_opener().open(
-                img_request, timeout=ARTICLE_FETCH_TIMEOUT
-            ) as img_response:
+            with urllib.request.urlopen(img_request, timeout=ARTICLE_FETCH_TIMEOUT) as img_response:
                 img_content_type = img_response.headers.get("Content-Type", "")
                 if "image" in img_content_type.lower() or not img_content_type:
                     downloaded = img_response.read(MAX_THUMB_DOWNLOAD_BYTES + 1)
@@ -173,29 +146,28 @@ def _compress_for_bluesky(raw: bytes) -> bytes | None:
     """
     try:
         with Image.open(io.BytesIO(raw)) as opened:
-            if opened.width * opened.height > MAX_THUMB_PIXELS:
-                return None
             image = ImageOps.exif_transpose(opened).copy()
-        image.thumbnail((1600, 1600), Image.Resampling.LANCZOS)
-        image = image.convert("RGBA") if "A" in image.getbands() else image.convert("RGB")
-
-        output = io.BytesIO()
-        for quality in (94, 88, 82, 76, 68):
-            output.seek(0)
-            output.truncate(0)
-            image.save(output, format="WEBP", quality=quality, method=6)
-            if output.tell() <= BLUESKY_IMAGE_CAP:
-                break
-        if output.tell() > BLUESKY_IMAGE_CAP:
-            image.thumbnail((1000, 1000), Image.Resampling.LANCZOS)
-            output.seek(0)
-            output.truncate(0)
-            image.save(output, format="WEBP", quality=70, method=6)
-        if output.tell() > BLUESKY_IMAGE_CAP or output.tell() == 0:
-            return None
-        return output.getvalue()
-    except (UnidentifiedImageError, OSError, ValueError, Image.DecompressionBombError):
+    except (UnidentifiedImageError, OSError):
         return None
+
+    image.thumbnail((1600, 1600), Image.Resampling.LANCZOS)
+    image = image.convert("RGBA") if "A" in image.getbands() else image.convert("RGB")
+
+    output = io.BytesIO()
+    for quality in (94, 88, 82, 76, 68):
+        output.seek(0)
+        output.truncate(0)
+        image.save(output, format="WEBP", quality=quality, method=6)
+        if output.tell() <= BLUESKY_IMAGE_CAP:
+            break
+    if output.tell() > BLUESKY_IMAGE_CAP:
+        image.thumbnail((1000, 1000), Image.Resampling.LANCZOS)
+        output.seek(0)
+        output.truncate(0)
+        image.save(output, format="WEBP", quality=70, method=6)
+    if output.tell() > BLUESKY_IMAGE_CAP or output.tell() == 0:
+        return None
+    return output.getvalue()
 
 
 def _is_session_error(exc: Exception) -> bool:
@@ -210,51 +182,9 @@ def _is_session_error(exc: Exception) -> bool:
     return False
 
 
-_TID_ALPHABET = "234567abcdefghijklmnopqrstuvwxyz"
-_TID_PATTERN = re.compile(r"^[234567abcdefghij][234567abcdefghijklmnopqrstuvwxyz]{12}$")
-
-
-def _record_key(article_url: str, first_seen_at: str | None = None) -> str:
-    """A valid, deterministic TID record key for this story.
-
-    Bluesky only accepts TIDs (13-char base32 timestamp ids) as post record keys.
-    The timestamp comes from when the bot first saw the story, and the sub-second
-    part plus clock id come from the story's URL hash, so every retry of the same
-    story reuses the same key - letting a retry find, not duplicate, an earlier post.
-    """
-    digest = int.from_bytes(
-        hashlib.sha256(canonical_story_key(article_url).encode("utf-8")).digest()[:8], "big"
-    )
-    seconds = 0
-    if first_seen_at:
-        try:
-            stamp = datetime.fromisoformat(first_seen_at.replace("Z", "+00:00"))
-            if stamp.tzinfo is None:
-                stamp = stamp.replace(tzinfo=timezone.utc)
-            seconds = int(stamp.timestamp())
-        except ValueError:
-            seconds = 0
-    if seconds <= 0:
-        seconds = 1_600_000_000 + digest % 100_000_000  # stable fallback, Sept 2020 - Dec 2023
-    micros = seconds * 1_000_000 + digest % 1_000_000
-    clock_id = (digest >> 20) & 0x3FF
-    value = ((micros & ((1 << 53) - 1)) << 10) | clock_id
-    chars = []
-    for _ in range(13):
-        chars.append(_TID_ALPHABET[value & 0x1F])
-        value >>= 5
-    return "".join(reversed(chars))
-
-
-def _posted_article_url(value: object) -> str | None:
-    embed = value.get("embed") if isinstance(value, dict) else getattr(value, "embed", None)
-    external = embed.get("external") if isinstance(embed, dict) else getattr(embed, "external", None)
-    return external.get("uri") if isinstance(external, dict) else getattr(external, "uri", None)
-
-
 class BlueskyPublisher:
     def __init__(self) -> None:
-        self.handle = os.getenv("BLUESKY_HANDLE", "").strip().lstrip("@")
+        self.handle = os.getenv("BLUESKY_HANDLE", "oninews.bsky.social").strip()
         self.app_password = os.getenv("BLUESKY_APP_PASSWORD", "").strip()
         self._client: Client | None = None
         self._lock = threading.Lock()
@@ -298,10 +228,8 @@ class BlueskyPublisher:
         article_url: str,
         logo_path: Path | None,
         logo_alt: str,
-        credit: str | None = None,
-        first_seen_at: str | None = None,
     ) -> str:
-        lead = f"{headline}\n\n({attribution_line(source_name, credit)})\n\n"
+        lead = f"{headline}\n\n(Source: {source_name})\n\n"
         link_text = _link_display_text(article_url)
         if len(lead) + len(link_text) > 300:
             raise ValueError(
@@ -323,10 +251,9 @@ class BlueskyPublisher:
                 thumb_bytes = None
 
         embed_title = (og_title or headline).strip()[:300] or headline[:300]
-        embed_description = (og_description or attribution_line(source_name, credit)).strip()[:1000]
+        embed_description = (og_description or f"via {source_name}").strip()[:1000]
 
         client = self._get_client()
-        rkey = _record_key(article_url, first_seen_at)
         try:
             external = models.AppBskyEmbedExternal.External(
                 uri=article_url,
@@ -337,39 +264,13 @@ class BlueskyPublisher:
                 upload = client.upload_blob(thumb_bytes)
                 external.thumb = upload.blob
             embed = models.AppBskyEmbedExternal.Main(external=external)
-            record = models.AppBskyFeedPost.Record(
-                created_at=client.get_current_time_iso(),
-                text=text.build_text(),
-                facets=text.build_facets(),
-                embed=embed,
-                langs=["en"],
-            )
-            result = client.com.atproto.repo.create_record(
-                models.ComAtprotoRepoCreateRecord.Data(
-                    repo=self.handle,
-                    collection="app.bsky.feed.post",
-                    rkey=rkey,
-                    record=record,
-                )
-            )
+            result = client.send_post(text=text, embed=embed, profile_identify=self.handle)
         except Exception as exc:
+            # If Bluesky rejected the login itself (e.g. a session that could no longer
+            # refresh), drop the cached login so the next attempt signs in fresh instead
+            # of repeating the same failure forever. Other errors (network blips, rate
+            # limits) keep the login and just go through the normal retry schedule.
             if _is_session_error(exc):
                 self._forget_client()
-            else:
-                # A timeout can mean the record was created but the response was lost.
-                # The stable rkey prevents a retry from creating a second post.
-                try:
-                    existing = client.com.atproto.repo.get_record(
-                        models.ComAtprotoRepoGetRecord.Params(
-                            repo=self.handle, collection="app.bsky.feed.post", rkey=rkey
-                        )
-                    )
-                except Exception:
-                    pass
-                else:
-                    posted_url = _posted_article_url(existing.value)
-                    if posted_url and canonical_story_key(posted_url) == canonical_story_key(article_url):
-                        return str(existing.uri)
-                    raise RuntimeError("Bluesky record key belongs to a different article.") from exc
             raise
         return str(result.uri)

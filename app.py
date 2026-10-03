@@ -1,27 +1,20 @@
-"""Local dashboard for the RSS-to-Bluesky news feed bot."""
+"""Local dashboard for the Bsky News Feed Bot."""
 
 from __future__ import annotations
 
 import hmac
-import ipaddress
+import io
 import os
 import secrets
-import signal
+import subprocess
 import sys
-import threading
-import time
+import uuid
 from pathlib import Path
 from urllib.parse import urlsplit
-
-if os.name == "nt":
-    import msvcrt
-else:
-    import fcntl
 
 from dotenv import load_dotenv
 from flask import (
     Flask,
-    Response,
     abort,
     flash,
     redirect,
@@ -31,11 +24,9 @@ from flask import (
     session,
     url_for,
 )
+from PIL import Image, ImageOps, UnidentifiedImageError
 
-import config
 import db
-import logos
-import starter
 from feeds import fetch_snapshot
 from publisher import BlueskyPublisher
 from worker import BotWorker
@@ -45,68 +36,68 @@ BASE_DIR = Path(__file__).resolve().parent
 load_dotenv(BASE_DIR / ".env")
 db.init_db()
 
-_instance_lock_handle = None
-ALREADY_RUNNING_EXIT_CODE = 10  # run_bot.ps1 stops instead of restarting on this code
+
+def _pid_is_running(pid: int) -> bool:
+    """Best-effort check for whether a given process ID is still alive on Windows."""
+    try:
+        result = subprocess.run(
+            ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        return str(pid) in result.stdout
+    except Exception:
+        # If the check itself fails for some reason, don't block startup over it.
+        return False
+
 
 def _ensure_single_instance() -> None:
-    """Hold an OS-managed lock so concurrent starts cannot run duplicate workers."""
-    global _instance_lock_handle
+    """Refuse to start if another copy of this bot is already running.
+
+    Without this, a second (or third...) copy launched while an earlier one was
+    still alive - e.g. from restarting start.ps1 after it looked like it had
+    failed - would each run their own independent posting loop against the same
+    Bluesky account, all at once.
+    """
     lock_path = db.INSTANCE_DIR / "bot.pid"
     db.INSTANCE_DIR.mkdir(parents=True, exist_ok=True)
-    lock_path.touch(exist_ok=True)
-    _instance_lock_handle = lock_path.open("r+b")
-    _instance_lock_handle.seek(0, os.SEEK_END)
-    if _instance_lock_handle.tell() == 0:
-        _instance_lock_handle.write(b"\0")
-        _instance_lock_handle.flush()
-    _instance_lock_handle.seek(0)
-    try:
-        if os.name == "nt":
-            msvcrt.locking(_instance_lock_handle.fileno(), msvcrt.LK_NBLCK, 1)
-        else:
-            fcntl.flock(_instance_lock_handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
-        _instance_lock_handle.close()
-        _instance_lock_handle = None
-        print("Another copy of this bot is already running. Close that window first.", file=sys.stderr)
-        sys.exit(ALREADY_RUNNING_EXIT_CODE)
-    _instance_lock_handle.seek(0)
-    _instance_lock_handle.write(str(os.getpid()).encode("ascii").ljust(16, b" "))
-    _instance_lock_handle.flush()
+    if lock_path.is_file():
+        try:
+            old_pid = int(lock_path.read_text(encoding="utf-8").strip())
+        except (ValueError, OSError):
+            old_pid = None
+        if old_pid and old_pid != os.getpid() and _pid_is_running(old_pid):
+            sys.exit(
+                f"Another copy of this bot is already running (process ID {old_pid}). "
+                "Close that window first (or End Task it in Task Manager), then start this one again."
+            )
+    lock_path.write_text(str(os.getpid()), encoding="utf-8")
 
 
 _ensure_single_instance()
 
 
 def _ensure_dashboard_secret() -> str:
-    """Use DASHBOARD_SECRET from the environment, or a random one kept in the database.
+    """Reuse DASHBOARD_SECRET from .env, or create and save one on first run.
 
-    A stable key matters: a fresh key on every restart silently invalidated the
-    session/CSRF token behind any dashboard tab left open across the restart.
-    Storing the fallback in the data directory (rather than editing .env) also
-    works for read-only installs such as Docker.
+    Without this, a new random secret_key was generated on every restart, which
+    silently invalidated the session/CSRF token behind any dashboard tab that was
+    still open from before the restart (its next form submit would fail with
+    "Form expired. Reload the page and try again.").
     """
-    existing = os.getenv("DASHBOARD_SECRET", "").strip()
+    existing = os.getenv("DASHBOARD_SECRET")
     if existing:
         return existing
-    stored = db.setting("dashboard_secret", "")
-    if not stored:
-        stored = secrets.token_urlsafe(32)
-        db.set_setting("dashboard_secret", stored)
-    return stored
-
-
-def _is_loopback(host: str) -> bool:
-    if host.lower() == "localhost":
-        return True
+    new_secret = secrets.token_urlsafe(32)
+    env_path = BASE_DIR / ".env"
     try:
-        return ipaddress.ip_address(host).is_loopback
-    except ValueError:
-        return False
-
-
-APP_HOST = os.getenv("APP_HOST", "127.0.0.1").strip() or "127.0.0.1"
-DASHBOARD_PASSWORD = os.getenv("DASHBOARD_PASSWORD", "")
+        with env_path.open("a", encoding="utf-8") as handle:
+            handle.write(f"\nDASHBOARD_SECRET={new_secret}\n")
+    except OSError:
+        pass  # Still usable for this run; just won't survive a restart.
+    os.environ["DASHBOARD_SECRET"] = new_secret
+    return new_secret
 
 
 app = Flask(__name__)
@@ -128,20 +119,6 @@ def csrf_value() -> str:
 
 
 @app.before_request
-def require_password() -> Response | None:
-    """HTTP Basic auth whenever DASHBOARD_PASSWORD is set (required off-loopback)."""
-    if not DASHBOARD_PASSWORD or request.endpoint == "health":
-        return None
-    auth = request.authorization
-    supplied = (auth.password or "") if auth and auth.type == "basic" else ""
-    if hmac.compare_digest(supplied.encode("utf-8"), DASHBOARD_PASSWORD.encode("utf-8")):
-        return None
-    return Response(
-        "Login required.", 401, {"WWW-Authenticate": 'Basic realm="News feed bot", charset="UTF-8"'}
-    )
-
-
-@app.before_request
 def protect_local_forms() -> None:
     if request.method == "POST":
         expected = session.get("csrf_token", "")
@@ -152,19 +129,53 @@ def protect_local_forms() -> None:
 
 @app.context_processor
 def inject_template_helpers() -> dict:
-    return {
-        "csrf_token": csrf_value,
-        "bot_name": config.bot_name(),
-        "bot_initials": config.bot_initials(),
-        "app_version": config.VERSION,
-        "repo_url": config.REPO_URL,
-    }
+    return {"csrf_token": csrf_value}
 
 
 def _store_logo(file_storage, source_name: str) -> tuple[str, str]:
     if not file_storage or not file_storage.filename:
         raise ValueError("Choose a logo image for this source.")
-    return logos.store_logo_bytes(file_storage.read(), source_name)
+    raw = file_storage.read()
+    if not raw:
+        raise ValueError("The selected logo file is empty.")
+    if len(raw) > 10 * 1024 * 1024:
+        raise ValueError("Logo files must be 10 MB or smaller.")
+
+    try:
+        with Image.open(io.BytesIO(raw)) as opened:
+            if opened.format not in {"PNG", "JPEG", "WEBP"}:
+                raise ValueError("Use a PNG, JPG, or WebP logo file.")
+            image = ImageOps.exif_transpose(opened).copy()
+    except UnidentifiedImageError as exc:
+        raise ValueError("That file is not a supported image. Use PNG, JPG, or WebP.") from exc
+
+    image.thumbnail((1600, 1600), Image.Resampling.LANCZOS)
+    if "A" not in image.getbands():
+        image = image.convert("RGB")
+    else:
+        image = image.convert("RGBA")
+
+    # Re-encoding strips camera metadata. Keep the result below Bluesky's current 2 MB image cap.
+    output = io.BytesIO()
+    for quality in (94, 88, 82, 76, 68):
+        output.seek(0)
+        output.truncate(0)
+        image.save(output, format="WEBP", quality=quality, method=6)
+        if output.tell() <= 1_900_000:
+            break
+    if output.tell() > 1_900_000:
+        image.thumbnail((1000, 1000), Image.Resampling.LANCZOS)
+        output.seek(0)
+        output.truncate(0)
+        image.save(output, format="WEBP", quality=70, method=6)
+    if output.tell() > 1_900_000:
+        raise ValueError("The logo could not be reduced below the Bluesky image limit.")
+
+    filename = f"source-{uuid.uuid4().hex}.webp"
+    target = db.LOGO_DIR / filename
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(output.getvalue())
+    return filename, f"{source_name} logo"
 
 
 @app.get("/")
@@ -179,28 +190,7 @@ def index():
         bluesky_handle=publisher.handle,
         bluesky_configured=publisher.configured,
         autopost_enabled=db.setting("autopost_enabled", "0") == "1",
-        geopolitics_only=db.setting("geopolitics_only", "1") == "1",
-        starter_count=len(starter.load_starter_sources()),
     )
-
-
-@app.post("/sources/starter-pack")
-def add_starter_pack():
-    result = starter.import_starter_sources(worker.activate_feed)
-    if result.added:
-        db.add_event("info", f"Added starter sources: {', '.join(result.added)}.")
-        message = f"Added and enabled {len(result.added)} sources: {', '.join(result.added)}."
-        if result.generated_logos:
-            message += (
-                f" Placeholder logos were made for {', '.join(result.generated_logos)};"
-                " you can replace them by removing and re-adding the source."
-            )
-        flash(message, "success")
-    elif not result.failed:
-        flash("All starter sources are already in your list.", "success")
-    if result.failed:
-        flash(f"Could not add: {'; '.join(result.failed)}", "error")
-    return redirect(url_for("index"))
 
 
 @app.post("/sources/add")
@@ -352,45 +342,9 @@ def toggle_autopost():
     return redirect(url_for("index"))
 
 
-@app.post("/settings/toggle-geopolitics")
-def toggle_geopolitics():
-    enabled = db.setting("geopolitics_only", "1") == "1"
-    db.set_setting("geopolitics_only", "0" if enabled else "1")
-    message = "Posting all new stories." if enabled else "Posting geopolitics stories only."
-    db.add_event("info", f"Topic filter changed: {message}")
-    flash(message, "success")
-    return redirect(url_for("index"))
-
-
 @app.get("/logos/<path:filename>")
 def logo_file(filename: str):
     return send_from_directory(db.LOGO_DIR, filename, max_age=3600)
-
-
-@app.get("/health")
-def health():
-    state = worker.health()
-    feeds = db.list_feeds()
-    state["feeds"] = {
-        "enabled": sum(1 for f in feeds if f["enabled"]),
-        "erroring": [f["source_name"] for f in feeds if f["enabled"] and f["last_error"]],
-    }
-    state["autopost_enabled"] = db.setting("autopost_enabled", "0") == "1"
-    return state, (200 if state["ok"] else 503)
-
-
-def _self_watchdog() -> None:
-    """Exit if a worker loop dies or hangs, so the supervisor (run_bot.ps1) restarts
-    the bot cleanly instead of leaving a dashboard that silently stopped posting."""
-    while True:
-        time.sleep(60)
-        state = worker.health()
-        if not state["ok"]:
-            try:
-                db.add_event("error", f"Worker unhealthy, restarting: {state}")
-            finally:
-                print(f"Worker unhealthy, exiting for restart: {state}", flush=True)
-                os._exit(3)
 
 
 @app.errorhandler(413)
@@ -401,22 +355,7 @@ def too_large(_error):
 
 if __name__ == "__main__":
     port = int(os.getenv("APP_PORT", "5000"))
-    host = APP_HOST
-    if not _is_loopback(host) and not DASHBOARD_PASSWORD and os.getenv("ALLOW_OPEN_DASHBOARD") != "1":
-        print(
-            f"Refusing to listen on {host}: the dashboard controls your Bluesky account. "
-            "Set DASHBOARD_PASSWORD in .env, or use APP_HOST=127.0.0.1.",
-            file=sys.stderr,
-        )
-        sys.exit(2)
-    threading.Thread(target=_self_watchdog, name="self-watchdog", daemon=True).start()
-    # Containers send SIGTERM to stop; PID 1 ignores it unless a handler is installed.
-    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
-    shown_host = "127.0.0.1" if host in {"0.0.0.0", "::"} else host
-    print(f"{config.bot_name()} dashboard: http://{shown_host}:{port}", flush=True)
-    try:
-        from waitress import serve
-    except ImportError:
-        app.run(host=host, port=port, debug=False, use_reloader=False, threaded=True)
-    else:
-        serve(app, host=host, port=port, threads=8, ident=config.bot_name())
+    host = "127.0.0.1"
+    print(f"Bsky News Feed Bot dashboard: http://{host}:{port}")
+    print("Keep this window open while the bot is running.")
+    app.run(host=host, port=port, debug=False, use_reloader=False, threaded=True)

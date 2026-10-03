@@ -8,17 +8,13 @@ import re
 import urllib.error
 import urllib.parse
 import urllib.request
-import zlib
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
 import feedparser
 
-import topics
 
-
-from config import USER_AGENT
-from netsafe import _public_url_opener
+USER_AGENT = "BskyNewsFeedBot/0.1 (+local RSS reader)"
 TIMEOUT_SECONDS = 25
 
 
@@ -59,46 +55,6 @@ def _published(entry) -> str | None:
         return None
 
 
-# Wire/news agencies whose copy public broadcasters often republish. Matched only
-# against the byline (author) field: summaries are full of photo captions like
-# "(AP Photo/...)" or "AFP via Getty Images" that say nothing about who wrote the text.
-_WIRE_AGENCIES: tuple[tuple[re.Pattern[str], str], ...] = (
-    # AAP first, and removed before the rest, so it is never also reported as AP.
-    (re.compile(r"\bAustralian\s+Associated\s+Press\b|\bAAP\b", re.I), "AAP"),
-    (re.compile(r"\bassociated\s+press\b|(?:^|,|\bby\s|\bvia\s|\bwith\s)\s*AP\s*$", re.I), "Associated Press"),
-    (re.compile(r"\breuters\b", re.I), "Reuters"),
-    (re.compile(r"\bagence\s+france[- ]presse\b|\bAFP\b", re.I), "AFP"),
-    (re.compile(r"\bcanadian\s+press\b", re.I), "The Canadian Press"),
-    (re.compile(r"\bPA\s+Media\b|\bPress\s+Association\b", re.I), "PA Media"),
-    (re.compile(r"\bDeutsche\s+Presse-Agentur\b|\bdpa\b"), "dpa"),
-    (re.compile(r"\bKyodo\b", re.I), "Kyodo News"),
-    (re.compile(r"\bYonhap\b", re.I), "Yonhap"),
-)
-
-
-def _byline(entry) -> str:
-    names = [entry.get("author") or ""]
-    for author in entry.get("authors") or []:
-        if isinstance(author, dict):
-            names.append(author.get("name") or "")
-    for key in ("dc_creator", "creator"):
-        names.append(str(entry.get(key) or ""))
-    return " ; ".join(_clean_text(name) for name in names if name)
-
-
-def wire_credit(byline: str) -> str | None:
-    """Return the wire agency credited in a byline, e.g. "Jane Doe, Associated Press"."""
-    found: list[str] = []
-    for name in (byline or "").split(";"):
-        remaining = name.strip()
-        for pattern, label in _WIRE_AGENCIES:
-            if pattern.search(remaining):
-                remaining = pattern.sub(" ", remaining)
-                if label not in found:
-                    found.append(label)
-    return " and ".join(found[:2]) or None
-
-
 def _article_url(link: str, base_url: str) -> str:
     if not link or not link.strip():
         return ""
@@ -120,13 +76,6 @@ _TRACKING_QUERY_KEYS = {
     "mc_eid",
     "mkt_tok",
     "wbraid",
-}
-
-
-_STABLE_ID_PATHS: dict[str, tuple[re.Pattern[str], str]] = {
-    "dw.com": (re.compile(r"/a-(\d+)$"), "/a-{}"),
-    "abc.net.au": (re.compile(r"^/news/(?:[^/]+/)*(\d{6,})$"), "/news/{}"),
-    "rte.ie": (re.compile(r"^/news/(?:[^/]+/)*(\d{6,})-[^/]*$"), "/news/{}"),
 }
 
 
@@ -152,16 +101,6 @@ def canonical_story_key(url: str) -> str:
     path = parsed.path or "/"
     if path != "/":
         path = path.rstrip("/") or "/"
-
-    # Some publishers rewrite a story's headline slug while keeping its numeric id
-    # (DW: /en/<slug>/a-79401752, ABC: /news/2026-10-02/<slug>/107221348). Key on
-    # the id alone so a retitled story is not treated as a brand-new one.
-    stable_id = _STABLE_ID_PATHS.get(hostname)
-    if stable_id:
-        match = stable_id[0].search(path)
-        if match:
-            return f"https://{hostname}{stable_id[1].format(match.group(1))}"
-
     query_pairs = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
     query_pairs = [
         (key, value)
@@ -176,19 +115,6 @@ def canonical_story_key(url: str) -> str:
     return urllib.parse.urlunsplit(("https", hostname, path, query, ""))
 
 
-_SPORT_TERMS = {"sport", "sports"}
-_SPORT_PATH_SEGMENTS = {"sport", "sports", "football"}
-
-
-def is_sport(entry, article_url: str) -> bool:
-    """Sport coverage falls outside the bot's global/breaking news remit."""
-    for tag in entry.get("tags") or []:
-        if str(tag.get("term") or "").strip().lower() in _SPORT_TERMS:
-            return True
-    segments = urllib.parse.urlsplit(article_url).path.lower().split("/")
-    return any(segment in _SPORT_PATH_SEGMENTS for segment in segments)
-
-
 def fetch_snapshot(
     url: str,
     *,
@@ -199,7 +125,6 @@ def fetch_snapshot(
     headers = {
         "User-Agent": USER_AGENT,
         "Accept": "application/atom+xml, application/rss+xml, application/xml, text/xml, */*;q=0.8",
-        "Accept-Encoding": "gzip",
     }
     if etag:
         headers["If-None-Match"] = etag
@@ -208,7 +133,7 @@ def fetch_snapshot(
     request = urllib.request.Request(url, headers=headers)
 
     try:
-        with _public_url_opener().open(request, timeout=TIMEOUT_SECONDS) as response:
+        with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as response:
             raw = response.read(4_000_001)
             if len(raw) > 4_000_000:
                 raise ValueError("Feed is larger than 4 MB; refusing to load it.")
@@ -221,16 +146,6 @@ def fetch_snapshot(
         raise ValueError(f"Feed server returned HTTP {exc.code}.") from exc
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         raise ValueError(f"Could not fetch feed: {exc}") from exc
-
-    # Some servers (UN News) gzip the body even without a Content-Encoding header.
-    if raw[:2] == b"\x1f\x8b":
-        try:
-            inflater = zlib.decompressobj(wbits=16 + zlib.MAX_WBITS)
-            raw = inflater.decompress(raw, 4_000_001)
-        except zlib.error as exc:
-            raise ValueError(f"Feed could not be decompressed: {exc}") from exc
-        if len(raw) > 4_000_000:
-            raise ValueError("Feed is larger than 4 MB; refusing to load it.")
 
     parsed = feedparser.parse(raw)
     if parsed.bozo and not parsed.entries:
@@ -250,11 +165,6 @@ def fetch_snapshot(
         article_link = _article_url(raw_link, response_url)
         if not headline or not article_link:
             continue
-        if is_sport(entry, article_link):
-            continue
-        summary = _clean_text(entry.get("summary"))[:600]
-        tags = [str(t.get("term") or "") for t in entry.get("tags") or []]
-        relevant, _score, topic_reason = topics.assess(headline, summary, tags, article_link)
         entries.append(
             {
                 # Use a normalized key for deduplication, but preserve the original
@@ -263,9 +173,6 @@ def fetch_snapshot(
                 "headline": headline[:1000],
                 "url": article_link,
                 "published_at": _published(entry),
-                "credit": wire_credit(_byline(entry)),
-                "geopolitical": relevant,
-                "topic_reason": topic_reason,
                 "_order": index,
             }
         )
