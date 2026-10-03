@@ -1,0 +1,301 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Bsky News Feed Bot</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div class="brand-lockup">
+        <div class="brand-mark">BN</div>
+        <div>
+          <p class="eyebrow">BSKY NEWS FEED BOT · AUTOMATION</p>
+          <h1>RSS desk</h1>
+        </div>
+      </div>
+      <div class="account-chip">
+        <span class="status-dot {{ 'is-live' if autopost_enabled else '' }}"></span>
+        <span>{{ 'Posting is on' if autopost_enabled else 'Posting is paused' }}</span>
+        <span class="divider">·</span>
+        <span class="mono">{{ bluesky_handle }}</span>
+      </div>
+    </header>
+
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        <section class="flash-stack" aria-live="polite">
+          {% for category, message in messages %}
+            <div class="flash flash-{{ category }}">{{ message }}</div>
+          {% endfor %}
+        </section>
+      {% endif %}
+    {% endwith %}
+
+    <section class="hero panel">
+      <div class="hero-copy">
+        <p class="eyebrow">YOUR SOURCES, ONE FEED</p>
+        <h2>Headlines to Bluesky, on autopilot.</h2>
+        <p class="muted">Connect an RSS or Atom feed, assign its publisher logo once, and let the bot handle new stories.</p>
+      </div>
+      <div class="hero-stats">
+        <div><strong>{{ counts.sources }}</strong><span>sources</span></div>
+        <div><strong>{{ counts.active_feeds }}/{{ counts.feeds }}</strong><span>feeds on</span></div>
+        <div><strong>{{ counts.posted }}</strong><span>posts sent</span></div>
+      </div>
+    </section>
+
+    <section class="setup-grid">
+      <article class="panel setup-card">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">STEP 1 · BLUESKY</p>
+            <h2>Connect the account</h2>
+          </div>
+          <span class="pill {{ 'pill-green' if bluesky_configured else 'pill-muted' }}">
+            {{ 'Credentials found' if bluesky_configured else 'Needs app password' }}
+          </span>
+        </div>
+        <p class="muted">Use a Bluesky app password in the local <code>.env</code> file. Your main account password is never needed.</p>
+        <ol class="compact-list">
+          <li>In Bluesky, open <strong>Settings → Privacy and Security → App Passwords</strong>.</li>
+          <li>Add the app password to <code>BLUESKY_APP_PASSWORD</code> in <code>.env</code>.</li>
+          <li>Restart this app, then check the connection.</li>
+        </ol>
+        <div class="button-row">
+          <form method="post" action="{{ url_for('test_bluesky') }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button class="button button-secondary" type="submit">Check connection</button>
+          </form>
+          <form method="post" action="{{ url_for('toggle_autopost') }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            {% if autopost_enabled %}
+              <button class="button button-danger" type="submit">Pause auto-posting</button>
+            {% else %}
+              <button class="button button-primary" type="submit">Start auto-posting</button>
+            {% endif %}
+          </form>
+        </div>
+      </article>
+
+      <article class="panel format-card">
+        <p class="eyebrow">POST FORMAT</p>
+        <div class="post-preview">
+          <div class="preview-avatar">BN</div>
+          <div class="preview-content">
+            <div class="preview-byline"><strong>Bsky News Feed Bot</strong><span class="mono">@oninews.bsky.social</span></div>
+            <p class="preview-headline">Full story headline goes here</p>
+            <p class="preview-source">(Source: PBS NewsHour)</p>
+            <p class="preview-url">https://www.pbs.org/newshour/...</p>
+            <div class="preview-image"><span>Publisher logo</span></div>
+          </div>
+        </div>
+        <p class="tiny muted">The bot attaches the source logo, skips the feed blurb and article image, and links directly to the story.</p>
+      </article>
+    </section>
+
+    <section class="content-grid">
+      <div class="main-column">
+        <article class="panel">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">STEP 2 · PUBLISHER</p>
+              <h2>Add a source profile</h2>
+            </div>
+            <span class="step-number">01</span>
+          </div>
+          <p class="muted">Add the publisher name and logo once. Any feeds you connect to this source can reuse them.</p>
+          <form method="post" action="{{ url_for('add_source') }}" enctype="multipart/form-data" class="form-grid">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <label class="field field-wide">
+              <span>Publisher name</span>
+              <input name="name" type="text" maxlength="80" placeholder="PBS NewsHour" required>
+            </label>
+            <label class="field field-wide">
+              <span>Logo image <small>PNG, JPG, or WebP</small></span>
+              <input name="logo" type="file" accept="image/png,image/jpeg,image/webp" required>
+            </label>
+            <label class="field field-wide">
+              <span>Image description <small>alt text</small></span>
+              <input name="logo_alt" type="text" maxlength="300" placeholder="PBS NewsHour logo">
+            </label>
+            <div class="field-wide form-end">
+              <button class="button button-primary" type="submit">Save source</button>
+            </div>
+          </form>
+        </article>
+
+        <article class="panel">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">STEP 3 · FEED</p>
+              <h2>Connect an RSS feed</h2>
+            </div>
+            <span class="step-number">02</span>
+          </div>
+          <p class="muted">Paste the feed URL. The bot checks the feed and shows its latest headline before you switch it on.</p>
+          {% if sources %}
+            <form method="post" action="{{ url_for('add_feed') }}" class="form-grid">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+              <label class="field field-wide">
+                <span>RSS or Atom URL</span>
+                <input name="url" type="url" placeholder="https://example.org/news/rss.xml" required>
+              </label>
+              <label class="field field-wide">
+                <span>Publisher profile</span>
+                <select name="source_id" required>
+                  <option value="" disabled selected>Choose a source</option>
+                  {% for source in sources %}
+                    <option value="{{ source.id }}">{{ source.name }}</option>
+                  {% endfor %}
+                </select>
+              </label>
+              <div class="field-wide form-end">
+                <button class="button button-primary" type="submit">Check and add feed</button>
+              </div>
+            </form>
+          {% else %}
+            <div class="empty-inline">Save a publisher profile first, then connect its RSS feed here.</div>
+          {% endif %}
+        </article>
+
+        <article class="panel">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">YOUR CONFIGURATION</p>
+              <h2>Connected feeds</h2>
+            </div>
+            <span class="count-badge">{{ feeds|length }}</span>
+          </div>
+          {% if feeds %}
+            <div class="feed-list">
+              {% for feed in feeds %}
+                <div class="feed-row">
+                  <div class="feed-status {{ 'feed-status-on' if feed.enabled else '' }}"></div>
+                  <div class="feed-main">
+                    <div class="feed-title-line">
+                      <strong>{{ feed.source_name }}</strong>
+                      <span class="pill {{ 'pill-green' if feed.enabled else 'pill-muted' }}">{{ 'Monitoring' if feed.enabled else 'Paused' }}</span>
+                    </div>
+                    <a class="feed-url" href="{{ feed.url }}" target="_blank" rel="noreferrer">{{ feed.url }}</a>
+                    {% if feed.latest_headline %}<p class="tiny muted latest-line">Latest seen: {{ feed.latest_headline }}</p>{% endif %}
+                    {% if feed.last_error %}<p class="tiny error-text">Last feed error: {{ feed.last_error }}</p>{% endif %}
+                  </div>
+                  <div class="feed-actions">
+                    <form method="post" action="{{ url_for('toggle_feed', feed_id=feed.id) }}">
+                      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                      <button class="button button-small {{ 'button-secondary' if feed.enabled else 'button-primary' }}" type="submit">{{ 'Pause' if feed.enabled else 'Enable' }}</button>
+                    </form>
+                    <form method="post" action="{{ url_for('remove_feed', feed_id=feed.id) }}" onsubmit="return confirm('Remove this feed and its saved story history?')">
+                      <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                      <button class="icon-button" type="submit" aria-label="Remove feed" title="Remove feed">×</button>
+                    </form>
+                  </div>
+                </div>
+              {% endfor %}
+            </div>
+          {% else %}
+            <div class="empty-inline">No feeds yet. Add a publisher, then paste its RSS or Atom URL.</div>
+          {% endif %}
+        </article>
+
+        <article class="panel">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">PUBLISHER PROFILES</p>
+              <h2>Sources and logos</h2>
+            </div>
+          </div>
+          {% if sources %}
+            <div class="source-grid">
+              {% for source in sources %}
+                <div class="source-card">
+                  <img src="{{ url_for('logo_file', filename=source.logo_filename) }}" alt="{{ source.logo_alt }}">
+                  <div class="source-info">
+                    <strong>{{ source.name }}</strong>
+                    <span>{{ source.feed_count }} {{ 'feed' if source.feed_count == 1 else 'feeds' }}</span>
+                  </div>
+                  <form method="post" action="{{ url_for('remove_source', source_id=source.id) }}" onsubmit="return confirm('Remove this source and all its feeds?')">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <button class="icon-button" type="submit" aria-label="Remove source" title="Remove source and connected feeds">×</button>
+                  </form>
+                </div>
+              {% endfor %}
+            </div>
+          {% else %}
+            <div class="empty-inline">Publisher profiles will appear here.</div>
+          {% endif %}
+        </article>
+      </div>
+
+      <aside class="side-column">
+        <article class="panel note-card">
+          <p class="eyebrow">AUTOMATION NOTES</p>
+          <h2>Built for new stories</h2>
+          <ul class="note-list">
+            <li>Turning on a feed marks its current stories as the starting point; they won’t all post at once.</li>
+            <li>Stories found while auto-posting is paused are skipped when you resume.</li>
+            <li>A normalized article link can only be posted once across all connected feeds, including links with common tracking tags.</li>
+            <li>Feed blurbs and story photos are ignored. The publisher logo is attached instead.</li>
+            <li>Very long headlines are left unposted rather than shortened.</li>
+          </ul>
+        </article>
+
+        <article class="panel">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">DELIVERY</p>
+              <h2>Recent posts</h2>
+            </div>
+          </div>
+          {% if recent_posts %}
+            <div class="activity-list">
+              {% for item in recent_posts %}
+                <div class="activity-row">
+                  <span class="activity-icon {{ 'activity-error' if item.status == 'failed' else 'activity-success' }}">{{ '!' if item.status == 'failed' else '✓' }}</span>
+                  <div>
+                    <strong>{{ item.source_name }}</strong>
+                    <p>{{ item.headline }}</p>
+                    {% if item.bsky_uri %}<a class="tiny" href="https://bsky.app/profile/{{ bluesky_handle }}/post/{{ item.bsky_uri.split('/')[-1] }}" target="_blank" rel="noreferrer">Open post ↗</a>{% endif %}
+                    {% if item.last_error %}<p class="tiny error-text">{{ item.last_error }}</p>{% endif %}
+                  </div>
+                </div>
+              {% endfor %}
+            </div>
+          {% else %}
+            <div class="empty-inline">Posts will show here after the first story is published.</div>
+          {% endif %}
+        </article>
+
+        <article class="panel">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">ACTIVITY</p>
+              <h2>Bot log</h2>
+            </div>
+          </div>
+          {% if events %}
+            <div class="log-list">
+              {% for event in events %}
+                <div class="log-row">
+                  <span class="log-dot log-{{ event.level }}"></span>
+                  <div><p>{{ event.message }}</p><time>{{ event.created_at.replace('T', ' ') }} UTC</time></div>
+                </div>
+              {% endfor %}
+            </div>
+          {% else %}
+            <div class="empty-inline">The bot log is quiet.</div>
+          {% endif %}
+        </article>
+      </aside>
+    </section>
+
+    <footer class="footer">
+      <span>Bsky News Feed Bot · Local dashboard</span>
+      <span>Keep this app running for automatic posting.</span>
+    </footer>
+  </main>
+</body>
+</html>
