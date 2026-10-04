@@ -33,7 +33,9 @@ Multiple feeds can use the same publisher profile and logo. Disable a feed to st
 
 ## Safety controls and behavior
 
-- The app listens on `127.0.0.1` only, so the dashboard is local to this computer.
+- The app listens on `127.0.0.1` by default. Set `APP_HOST` and `DASHBOARD_PASSWORD` to allow access from other devices (any username works). Use HTTPS or a trusted tunnel for remote access; HTTP Basic authentication does not encrypt the password.
+- Docker listens on all container interfaces. Publish its port to `127.0.0.1` and set `ALLOW_OPEN_DASHBOARD=1` for local-only access without a password, as in `docker-compose.yml`. Do not use that override for a publicly exposed dashboard.
+- `/health` is available without a password and returns HTTP 503 if either background loop is dead or stalled.
 - Automatic posting starts paused. You must test the Bluesky connection and turn it on in the dashboard.
 - Stories discovered while auto-posting is paused are skipped. Resuming does not produce a backlog burst.
 - A normalized article URL can only be posted once across all connected feeds, including common tracking-tag and fragment variants. This history stays in the local database even if a feed is removed. Stories published at different URLs are not assumed to be duplicates based only on similar headlines.
