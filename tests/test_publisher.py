@@ -11,6 +11,39 @@ import publisher
 
 
 class PreviewTests(unittest.TestCase):
+    def test_preview_uses_guarded_opener_for_article_and_image(self):
+        headers = Message()
+        headers["Content-Type"] = "text/html; charset=utf-8"
+        article = MagicMock()
+        article.headers = headers
+        article.geturl.return_value = "https://example.com/story"
+        article.read.return_value = b'<head><meta property="og:image" content="/photo.png"></head>'
+        article.__enter__.return_value = article
+        image = MagicMock()
+        image.headers = {"Content-Type": "image/png"}
+        image.read.return_value = b"image bytes"
+        image.__enter__.return_value = image
+        opener = MagicMock()
+        opener.open.side_effect = [article, image]
+        with patch.object(publisher, "_validate_public_http_url") as validate, \
+             patch.object(publisher, "_public_url_opener", return_value=opener):
+            self.assertEqual(
+                (None, None, b"image bytes"),
+                publisher._fetch_article_preview("https://example.com/story"),
+            )
+        self.assertEqual(
+            ["https://example.com/story", "https://example.com/photo.png"],
+            [call.args[0] for call in validate.call_args_list],
+        )
+        self.assertEqual(2, opener.open.call_count)
+
+    def test_private_preview_is_rejected_before_fetching(self):
+        with patch.object(publisher, "_public_url_opener") as opener:
+            self.assertEqual(
+                (None, None, None),
+                publisher._fetch_article_preview("http://127.0.0.1/story"),
+            )
+
     def test_article_and_thumbnail_use_public_only_opener(self):
         article = MagicMock()
         article.__enter__.return_value = article
@@ -199,6 +232,24 @@ class PostingTests(unittest.TestCase):
             return
         validate_tid(key, None)
 
+    def test_worker_metadata_is_used_for_record_and_attribution(self):
+        create = MagicMock(return_value=SimpleNamespace(uri="at://did:plc:bot/app.bsky.feed.post/key"))
+        self.client.com.atproto.repo.create_record = create
+        seen = "2026-10-02T03:43:29+00:00"
+        self.post(credit="Reuters", first_seen_at=seen)
+        data = create.call_args.args[0]
+        self.assertEqual(publisher._record_key(self.article, seen), data.rkey)
+        self.assertEqual(self.poster.handle, data.repo)
+        self.assertEqual("app.bsky.feed.post", data.collection)
+        self.assertIn("(Source: Example, with Reuters)", data.record.text)
+        self.assertEqual(self.article, data.record.embed.external.uri)
+
+    def test_record_key_is_stable_across_timezone_representations(self):
+        self.assertEqual(
+            publisher._record_key(self.article, "2026-10-02T03:43:29+00:00"),
+            publisher._record_key(self.article, "2026-10-02T05:43:29+02:00"),
+        )
+
     def test_worker_attribution_and_first_seen_are_supported(self):
         submitted = []
         self.client.com.atproto.repo.create_record = lambda data: (
@@ -295,6 +346,12 @@ class PostingTests(unittest.TestCase):
         self.client.com.atproto.repo.get_record = lambda params: (_ for _ in ()).throw(
             RuntimeError("record not found")
         )
+        with self.assertRaisesRegex(TimeoutError, "response lost"):
+            self.post()
+
+    def test_malformed_recovery_preserves_original_error(self):
+        self.client.com.atproto.repo.create_record = MagicMock(side_effect=TimeoutError("response lost"))
+        self.client.com.atproto.repo.get_record = lambda params: SimpleNamespace(value={"embed": None})
         with self.assertRaisesRegex(TimeoutError, "response lost"):
             self.post()
 

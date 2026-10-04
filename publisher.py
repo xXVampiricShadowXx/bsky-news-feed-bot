@@ -33,27 +33,32 @@ _TID_ALPHABET = "234567abcdefghijklmnopqrstuvwxyz"
 _TID_PATTERN = r"^[234567abcdefghij][234567abcdefghijklmnopqrstuvwxyz]{12}$"
 
 
-def _record_key(article_url: str, first_seen_at: str | None = None) -> str:
-    """Encode a stable story identity as a valid 13-character AT Protocol TID."""
-    identity = canonical_story_key(article_url)
-    if first_seen_at:
-        try:
-            seen = datetime.fromisoformat(first_seen_at.replace("Z", "+00:00"))
-            if seen.tzinfo is None:
-                seen = seen.replace(tzinfo=timezone.utc)
-            identity += "\n" + seen.astimezone(timezone.utc).isoformat()
-        except (ValueError, OverflowError, OSError):
-            pass
-    digest = hashlib.sha256(identity.encode("utf-8")).digest()
-    value = int.from_bytes(digest[:8], "big") & ((1 << 63) - 1)
-    return "".join(_TID_ALPHABET[(value >> shift) & 31] for shift in range(60, -1, -5))
-
-
 def attribution_line(source_name: str, credit: str | None = None) -> str:
     line = f"Source: {source_name}"
     if credit and credit.strip() and credit.strip().casefold() != source_name.strip().casefold():
         line += f", with {credit.strip()}"
     return line
+
+
+def _record_key(article_url: str, first_seen_at: str | None = None) -> str:
+    """Stable, valid TID so retrying a lost response cannot create another post."""
+    digest = int.from_bytes(
+        hashlib.sha256(canonical_story_key(article_url).encode()).digest()[:8], "big"
+    )
+    value = digest & ((1 << 63) - 1)
+    if first_seen_at:
+        try:
+            seen = datetime.fromisoformat(first_seen_at.replace("Z", "+00:00"))
+            seen = seen.replace(tzinfo=timezone.utc) if seen.tzinfo is None else seen
+            seconds = int(seen.timestamp())
+            # Keep chronological ordering, with URL-derived subsecond/clock bits.
+            micros = seconds * 1_000_000 + (digest >> 10) % 1_000_000
+            candidate = (micros << 10) | (digest & 1023)
+            if 0 <= candidate < 1 << 63:
+                value = candidate
+        except (ValueError, OverflowError, OSError):
+            pass
+    return "".join(_TID_ALPHABET[(value >> shift) & 31] for shift in range(60, -1, -5))
 
 
 def _record_article_url(record) -> str | None:
@@ -190,7 +195,12 @@ def _compress_for_bluesky(raw: bytes) -> bytes | None:
             if opened.width * opened.height > MAX_THUMB_PIXELS:
                 return None
             image = ImageOps.exif_transpose(opened).copy()
-    except (UnidentifiedImageError, OSError, Image.DecompressionBombError, Image.DecompressionBombWarning):
+    except (
+        UnidentifiedImageError,
+        OSError,
+        Image.DecompressionBombError,
+        Image.DecompressionBombWarning,
+    ):
         return None
 
     image.thumbnail((1600, 1600), Image.Resampling.LANCZOS)
