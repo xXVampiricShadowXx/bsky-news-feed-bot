@@ -79,25 +79,15 @@ _ensure_single_instance()
 
 
 def _ensure_dashboard_secret() -> str:
-    """Reuse DASHBOARD_SECRET from .env, or create and save one on first run.
+    """Reuse a configured DASHBOARD_SECRET, or generate one for this run.
 
-    Without this, a new random secret_key was generated on every restart, which
-    silently invalidated the session/CSRF token behind any dashboard tab that was
-    still open from before the restart (its next form submit would fail with
-    "Form expired. Reload the page and try again.").
+    Set DASHBOARD_SECRET in the process environment to keep sessions valid
+    across restarts. Otherwise, sessions are invalidated when the bot restarts.
     """
     existing = os.getenv("DASHBOARD_SECRET")
     if existing:
         return existing
-    new_secret = secrets.token_urlsafe(32)
-    env_path = BASE_DIR / ".env"
-    try:
-        with env_path.open("a", encoding="utf-8") as handle:
-            handle.write(f"\nDASHBOARD_SECRET={new_secret}\n")
-    except OSError:
-        pass  # Still usable for this run; just won't survive a restart.
-    os.environ["DASHBOARD_SECRET"] = new_secret
-    return new_secret
+    return secrets.token_urlsafe(32)
 
 
 app = Flask(__name__)
