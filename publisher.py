@@ -62,13 +62,17 @@ def _record_key(article_url: str, first_seen_at: str | None = None) -> str:
         timestamp = datetime.fromisoformat(value)
         if timestamp.tzinfo is None:
             timestamp = timestamp.replace(tzinfo=timezone.utc)
-        timestamp_us = int(timestamp.timestamp() * 1_000_000)
     except (AttributeError, OverflowError, OSError, TypeError, ValueError):
-        timestamp_us = int(datetime.now(timezone.utc).timestamp() * 1_000_000)
-    clock_id = int.from_bytes(
-        hashlib.sha256(canonical_story_key(article_url).encode("utf-8")).digest()[:2],
+        timestamp = datetime.now(timezone.utc)
+    epoch = datetime(1970, 1, 1, tzinfo=timezone.utc)
+    delta = timestamp.astimezone(timezone.utc).replace(microsecond=0) - epoch
+    timestamp_seconds = max(0, delta.days * 86_400 + delta.seconds)
+    story_hash = int.from_bytes(
+        hashlib.sha256(canonical_story_key(article_url).encode("utf-8")).digest()[:8],
         "big",
-    ) & 0x3FF
+    )
+    timestamp_us = timestamp_seconds * 1_000_000 + story_hash % 1_000_000
+    clock_id = (story_hash // 1_000_000) & 0x3FF
     value = (timestamp_us << 10) | clock_id
     encoded = "".join(
         _TID_ALPHABET[(value >> shift) & 31] for shift in range(0, 65, 5)

@@ -95,6 +95,13 @@ class PostingTests(unittest.TestCase):
             return
         validate_tid(key, None)
 
+    def test_record_keys_distinguish_stories_seen_in_the_same_second(self):
+        seen = "2026-10-02T03:43:29+00:00"
+        self.assertNotEqual(
+            publisher._record_key("https://example.com/story-10", seen),
+            publisher._record_key("https://example.com/story-18", seen),
+        )
+
     def test_lost_response_recovers_existing_post(self):
         self.client.com.atproto.repo.create_record = lambda data: (_ for _ in ()).throw(
             TimeoutError("response lost")
