@@ -18,7 +18,7 @@ BASE_DIR = Path(__file__).resolve().parent
 INSTANCE_DIR = Path(os.getenv("BOT_DATA_DIR", str(BASE_DIR / "instance"))).resolve()
 LOGO_DIR = INSTANCE_DIR / "logos"
 DB_PATH = INSTANCE_DIR / "bot.sqlite3"
-STORY_KEY_VERSION = "3"
+STORY_KEY_VERSION = "4"
 
 # One SQLite connection shared by the whole app (the background worker and every
 # web request), instead of opening and closing a new connection on every db.* call.
@@ -149,13 +149,28 @@ def init_db() -> None:
             "SELECT value FROM settings WHERE key = 'story_key_version'"
         ).fetchone()
         if not key_version or key_version["value"] != STORY_KEY_VERSION:
+            story_history: dict[str, str] = {}
+            old_stories = conn.execute(
+                "SELECT story_key, first_seen_at FROM seen_stories"
+            ).fetchall()
+            for story in old_stories:
+                story_key = canonical_story_key(story["story_key"])
+                if story_key:
+                    first_seen_at = story["first_seen_at"]
+                    previous = story_history.get(story_key)
+                    if previous is None or first_seen_at < previous:
+                        story_history[story_key] = first_seen_at
             for item in conn.execute("SELECT article_url, created_at FROM items").fetchall():
                 story_key = canonical_story_key(item["article_url"])
                 if story_key:
-                    conn.execute(
-                        "INSERT OR IGNORE INTO seen_stories(story_key, first_seen_at) VALUES(?, ?)",
-                        (story_key, item["created_at"]),
-                    )
+                    previous = story_history.get(story_key)
+                    if previous is None or item["created_at"] < previous:
+                        story_history[story_key] = item["created_at"]
+            conn.execute("DELETE FROM seen_stories")
+            conn.executemany(
+                "INSERT INTO seen_stories(story_key, first_seen_at) VALUES(?, ?)",
+                story_history.items(),
+            )
             conn.execute(
                 "INSERT OR REPLACE INTO settings(key, value) VALUES('story_key_version', ?)",
                 (STORY_KEY_VERSION,),
@@ -419,8 +434,13 @@ def store_feed_items(
             if seen.rowcount != 1:
                 continue
             item_status, reason = status, None
-            if topic_filter and status != "baseline" and item.get("geopolitical") is False:
-                item_status, reason = "filtered", f"Skipped, {item.get('topic_reason') or 'not geopolitical'}"
+            if topic_filter and status != "baseline" and (
+                item.get("geopolitical") is False or item.get("sport") is True
+            ):
+                reason = item.get("topic_reason") or (
+                    "sports coverage" if item.get("sport") is True else "not geopolitical"
+                )
+                item_status = "filtered"
             tokens = similarity.headline_tokens(item["headline"])
             if item_status in {"pending", "paused"}:
                 if recent_headlines is None:

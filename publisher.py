@@ -6,6 +6,7 @@ from __future__ import annotations
 import hashlib
 import io
 import os
+import re
 import threading
 import urllib.request
 from datetime import datetime, timezone
@@ -30,42 +31,7 @@ MAX_THUMB_DOWNLOAD_BYTES = 8_000_000
 MAX_THUMB_PIXELS = 20_000_000
 BLUESKY_IMAGE_CAP = 1_900_000  # keep just under Bluesky's current 2 MB image cap
 _TID_ALPHABET = "234567abcdefghijklmnopqrstuvwxyz"
-_TID_PATTERN = r"^[234567abcdefghij][234567abcdefghijklmnopqrstuvwxyz]{12}$"
-
-
-def attribution_line(source_name: str, credit: str | None = None) -> str:
-    line = f"Source: {source_name}"
-    if credit and credit.strip() and credit.strip().casefold() != source_name.strip().casefold():
-        line += f", with {credit.strip()}"
-    return line
-
-
-def _record_key(article_url: str, first_seen_at: str | None = None) -> str:
-    """Stable, valid TID so retrying a lost response cannot create another post."""
-    digest = int.from_bytes(
-        hashlib.sha256(canonical_story_key(article_url).encode()).digest()[:8], "big"
-    )
-    value = digest & ((1 << 63) - 1)
-    if first_seen_at:
-        try:
-            seen = datetime.fromisoformat(first_seen_at.replace("Z", "+00:00"))
-            seen = seen.replace(tzinfo=timezone.utc) if seen.tzinfo is None else seen
-            seconds = int(seen.timestamp())
-            # Keep chronological ordering, with URL-derived subsecond/clock bits.
-            micros = seconds * 1_000_000 + (digest >> 10) % 1_000_000
-            candidate = (micros << 10) | (digest & 1023)
-            if 0 <= candidate < 1 << 63:
-                value = candidate
-        except (ValueError, OverflowError, OSError):
-            pass
-    return "".join(_TID_ALPHABET[(value >> shift) & 31] for shift in range(60, -1, -5))
-
-
-def _record_article_url(record) -> str | None:
-    def field(value, name):
-        return value.get(name) if isinstance(value, dict) else getattr(value, name, None)
-
-    return field(field(field(record, "embed"), "external"), "uri")
+_TID_PATTERN = re.compile(r"^[234567abcdefghij][234567abcdefghijklmnopqrstuvwxyz]{12}$")
 
 
 def _link_display_text(article_url: str) -> str:
@@ -77,6 +43,41 @@ def _link_display_text(article_url: str) -> str:
     if host.startswith("www."):
         host = host[4:]
     return host or article_url  # fall back to the full url if it somehow has no host
+
+
+def attribution_line(source_name: str, credit: str | None = None) -> str:
+    source_name = source_name.strip()
+    credit = (credit or "").strip()
+    if credit and credit.casefold() != source_name.casefold():
+        return f"Source: {source_name}, with {credit}"
+    return f"Source: {source_name}"
+
+
+def _record_key(article_url: str, first_seen_at: str | None = None) -> str:
+    """Build a stable, valid TID from the story's first-seen time and canonical URL."""
+    try:
+        value = first_seen_at or "1970-01-01T00:00:00+00:00"
+        if value.endswith("Z"):
+            value = value[:-1] + "+00:00"
+        timestamp = datetime.fromisoformat(value)
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=timezone.utc)
+    except (AttributeError, OverflowError, OSError, TypeError, ValueError):
+        timestamp = datetime(1970, 1, 1, tzinfo=timezone.utc)
+    epoch = datetime(1970, 1, 1, tzinfo=timezone.utc)
+    delta = timestamp.astimezone(timezone.utc).replace(microsecond=0) - epoch
+    timestamp_seconds = max(0, delta.days * 86_400 + delta.seconds)
+    story_hash = int.from_bytes(
+        hashlib.sha256(canonical_story_key(article_url).encode("utf-8")).digest()[:8],
+        "big",
+    )
+    timestamp_us = timestamp_seconds * 1_000_000 + story_hash % 1_000_000
+    clock_id = (story_hash // 1_000_000) & 0x3FF
+    value = (timestamp_us << 10) | clock_id
+    encoded = "".join(
+        _TID_ALPHABET[(value >> shift) & 31] for shift in range(0, 65, 5)
+    )[::-1]
+    return encoded[-13:]
 
 
 class _OpenGraphParser(HTMLParser):
@@ -291,7 +292,7 @@ class BlueskyPublisher:
                 "The full headline, source line, and link exceed Bluesky's post-length limit. "
                 "This story was left unposted rather than shortening the headline."
             )
-        text = client_utils.TextBuilder().text(lead).link(link_text, article_url)
+        builder = client_utils.TextBuilder().text(lead).link(link_text, article_url)
 
         # Try the article's own preview image first; fall back to the source's logo;
         # fall back again to a text-only card if even that isn't available. Nothing
@@ -309,52 +310,43 @@ class BlueskyPublisher:
         embed_description = (og_description or f"via {source_name}").strip()[:1000]
 
         client = self._get_client()
-        rkey = _record_key(article_url, first_seen_at)
-        try:
-            external = models.AppBskyEmbedExternal.External(
-                uri=article_url,
-                title=embed_title,
-                description=embed_description,
+        now = (
+            client.get_current_time_iso()
+            if hasattr(client, "get_current_time_iso")
+            else datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace(
+                "+00:00", "Z"
             )
+        )
+        repo = getattr(getattr(client, "me", None), "did", self.handle)
+        external = models.AppBskyEmbedExternal.External(
+            uri=article_url,
+            title=embed_title,
+            description=embed_description,
+        )
+        try:
             if thumb_bytes is not None:
                 upload = client.upload_blob(thumb_bytes)
                 external.thumb = upload.blob
-            embed = models.AppBskyEmbedExternal.Main(external=external)
-            data = models.ComAtprotoRepoCreateRecord.Data(
-                repo=self.handle,
-                collection="app.bsky.feed.post",
-                rkey=rkey,
-                record=models.AppBskyFeedPost.Record(
-                    text=text.build_text(),
-                    facets=text.build_facets(),
-                    embed=embed,
-                    created_at=client.get_current_time_iso(),
-                    langs=["en"],
-                ),
-            )
-            try:
-                result = client.com.atproto.repo.create_record(data)
-            except Exception as create_error:
-                if _is_session_error(create_error):
-                    raise
-                # A timeout may mean the write succeeded. Only recover a matching
-                # article at the exact deterministic key; never accept a collision.
-                try:
-                    existing = client.com.atproto.repo.get_record(
-                        models.ComAtprotoRepoGetRecord.Params(
-                            repo=self.handle, collection=data.collection, rkey=rkey
-                        )
-                    )
-                except Exception as recovery_error:
-                    if _is_session_error(recovery_error):
-                        self._forget_client()
-                    existing = None
-                if existing is None or not getattr(existing, "uri", None):
-                    raise
-                existing_url = _record_article_url(getattr(existing, "value", None))
-                if not existing_url or canonical_story_key(existing_url) != canonical_story_key(article_url):
-                    raise RuntimeError("The deterministic record key belongs to a different article.")
-                result = existing
+        except Exception as exc:
+            if _is_session_error(exc):
+                self._forget_client()
+            raise
+        embed = models.AppBskyEmbedExternal.Main(external=external)
+        record = models.AppBskyFeedPost.Record(
+            text=builder.build_text(),
+            created_at=now,
+            facets=builder.build_facets(),
+            embed=embed,
+            langs=["en"],
+        )
+        data = models.ComAtprotoRepoCreateRecord.Data(
+            repo=repo,
+            collection="app.bsky.feed.post",
+            rkey=_record_key(article_url, first_seen_at),
+            record=record,
+        )
+        try:
+            result = client.com.atproto.repo.create_record(data)
         except Exception as exc:
             # If Bluesky rejected the login itself (e.g. a session that could no longer
             # refresh), drop the cached login so the next attempt signs in fresh instead
@@ -362,5 +354,37 @@ class BlueskyPublisher:
             # limits) keep the login and just go through the normal retry schedule.
             if _is_session_error(exc):
                 self._forget_client()
-            raise
+                raise
+            try:
+                params = models.ComAtprotoRepoGetRecord.Params(
+                    repo=repo,
+                    collection="app.bsky.feed.post",
+                    rkey=data.rkey,
+                )
+                existing = client.com.atproto.repo.get_record(params)
+            except Exception as recovery_error:
+                if _is_session_error(recovery_error):
+                    self._forget_client()
+                raise exc
+            if not getattr(existing, "uri", None):
+                raise exc
+            value = getattr(existing, "value", None)
+            record_embed = (
+                value.get("embed") if isinstance(value, dict) else getattr(value, "embed", None)
+            )
+            existing_external = (
+                record_embed.get("external")
+                if isinstance(record_embed, dict)
+                else getattr(record_embed, "external", None)
+            )
+            existing_url = (
+                existing_external.get("uri")
+                if isinstance(existing_external, dict)
+                else getattr(existing_external, "uri", None)
+            )
+            if not existing_url:
+                raise RuntimeError("Existing Bluesky record uses a different article URL.") from exc
+            if canonical_story_key(existing_url) != canonical_story_key(article_url):
+                raise RuntimeError("Existing Bluesky record uses a different article URL.") from exc
+            return str(existing.uri)
         return str(result.uri)

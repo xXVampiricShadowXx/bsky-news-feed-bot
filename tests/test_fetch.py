@@ -28,7 +28,7 @@ class FakeResponse(io.BytesIO):
 
 
 class FetchTests(unittest.TestCase):
-    def test_plain_feed_extracts_credit_and_skips_sport(self):
+    def test_plain_feed_extracts_credit_and_classifies_sport(self):
         rss = b"""<rss version="2.0"><channel><title>News</title>
         <item><title>World news</title><link>https://example.com/world</link>
         <author>Jane Doe, Reuters</author></item>
@@ -39,9 +39,15 @@ class FetchTests(unittest.TestCase):
         opener.open.return_value = FakeResponse(rss)
         with patch.object(feeds, "_public_url_opener", return_value=opener):
             snapshot = feeds.fetch_snapshot("https://example.com/rss")
-        self.assertEqual(["World news"], [entry["headline"] for entry in snapshot.entries])
+        self.assertEqual(
+            ["World news", "Sport news", "More sport"],
+            [entry["headline"] for entry in snapshot.entries],
+        )
         self.assertEqual("Reuters", snapshot.entries[0]["credit"])
         self.assertEqual("https://example.com/world", snapshot.entries[0]["url"])
+        self.assertFalse(snapshot.entries[0]["sport"])
+        self.assertTrue(snapshot.entries[1]["sport"])
+        self.assertTrue(snapshot.entries[2]["sport"])
 
     def test_compressed_feed_cannot_bypass_size_limit(self):
         opener = MagicMock()
@@ -88,11 +94,13 @@ class FetchTests(unittest.TestCase):
         <item><title>Football match</title><link>https://example.com/sport/1</link></item>
         </channel></rss>"""
         entries = self.fetch(raw).entries
-        self.assertEqual(2, len(entries))
+        self.assertEqual(3, len(entries))
         self.assertEqual("Reuters", entries[0]["credit"])
         self.assertTrue(entries[0]["geopolitical"])
         self.assertFalse(entries[1]["geopolitical"])
         self.assertIn("not geopolitical", entries[1]["topic_reason"])
+        self.assertTrue(entries[2]["sport"])
+        self.assertFalse(entries[2]["geopolitical"])
 
     def test_plain_feed_is_still_parsed(self):
         opener = MagicMock()
@@ -142,8 +150,13 @@ class FetchTests(unittest.TestCase):
         opener.open.return_value = FakeResponse(raw)
         with patch.object(feeds, "_public_url_opener", return_value=opener):
             snapshot = feeds.fetch_snapshot("https://example.org/feed.xml")
-        self.assertEqual(["World news"], [entry["headline"] for entry in snapshot.entries])
+        self.assertEqual(
+            ["World news", "Match results", "More results"],
+            [entry["headline"] for entry in snapshot.entries],
+        )
         self.assertEqual("Reuters", snapshot.entries[0]["credit"])
+        self.assertTrue(snapshot.entries[1]["sport"])
+        self.assertTrue(snapshot.entries[2]["sport"])
 
     def test_feed_url_resolving_to_private_address_is_refused(self):
         private = [(2, 1, 6, "", ("127.0.0.1", 443))]

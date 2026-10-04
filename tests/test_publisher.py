@@ -218,6 +218,21 @@ class PostingTests(unittest.TestCase):
             publisher._record_key("http://www.example.com/story"),
         )
 
+    def test_missing_first_seen_time_keeps_retry_key_stable(self):
+        timestamps = iter(("2026-10-01T12:00:00Z", "2026-10-01T12:00:01Z"))
+        self.client.get_current_time_iso = lambda: next(timestamps)
+        submitted = []
+        self.client.com.atproto.repo.create_record = lambda data: (
+            submitted.append(data) or SimpleNamespace(uri="at://did:plc:bot/app.bsky.feed.post/key")
+        )
+        self.post()
+        self.post()
+        self.assertNotEqual(
+            submitted[0].record.created_at,
+            submitted[1].record.created_at,
+        )
+        self.assertEqual(submitted[0].rkey, submitted[1].rkey)
+
     def test_record_key_is_a_valid_tid(self):
         seen = "2026-10-02T03:43:29+00:00"
         key = publisher._record_key(self.article, seen)
