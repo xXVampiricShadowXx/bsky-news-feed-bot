@@ -254,9 +254,24 @@ class PostingTests(unittest.TestCase):
     def test_session_rejection_forgets_client_before_retry(self):
         error = publisher.LoginRequiredError("login expired")
         self.client.com.atproto.repo.create_record = MagicMock(side_effect=error)
+        get = MagicMock()
+        self.client.com.atproto.repo.get_record = get
         with patch.object(self.poster, "_forget_client") as forget:
             with self.assertRaises(publisher.LoginRequiredError):
                 self.post()
+        forget.assert_called_once_with()
+        get.assert_not_called()
+
+    def test_recovery_session_rejection_preserves_original_error_and_forgets_client(self):
+        error = TimeoutError("response lost")
+        self.client.com.atproto.repo.create_record = MagicMock(side_effect=error)
+        self.client.com.atproto.repo.get_record = MagicMock(
+            side_effect=publisher.LoginRequiredError("login expired")
+        )
+        with patch.object(self.poster, "_forget_client") as forget:
+            with self.assertRaises(TimeoutError) as raised:
+                self.post()
+        self.assertIs(error, raised.exception)
         forget.assert_called_once_with()
 
     def test_conflicting_record_is_not_marked_posted(self):

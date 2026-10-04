@@ -328,7 +328,9 @@ class BlueskyPublisher:
             )
             try:
                 result = client.com.atproto.repo.create_record(data)
-            except Exception:
+            except Exception as create_error:
+                if _is_session_error(create_error):
+                    raise
                 # A timeout may mean the write succeeded. Only recover a matching
                 # article at the exact deterministic key; never accept a collision.
                 try:
@@ -337,7 +339,9 @@ class BlueskyPublisher:
                             repo=self.handle, collection=data.collection, rkey=rkey
                         )
                     )
-                except Exception:
+                except Exception as recovery_error:
+                    if _is_session_error(recovery_error):
+                        self._forget_client()
                     existing = None
                 if existing is None or not getattr(existing, "uri", None):
                     raise
