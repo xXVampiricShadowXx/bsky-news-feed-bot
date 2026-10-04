@@ -51,7 +51,9 @@ class FetchTests(unittest.TestCase):
                 feeds.fetch_snapshot("https://example.com/rss")
 
     def test_invalid_gzip_is_reported_as_fetch_error(self):
-        for body in (b"\x1f\x8bnot gzip", gzip.compress(RSS)[:-5]):
+        corrupt_deflate = bytearray(gzip.compress(RSS))
+        corrupt_deflate[10] = (corrupt_deflate[10] & 0xF9) | 0x06
+        for body in (b"\x1f\x8bnot gzip", gzip.compress(RSS)[:-5], bytes(corrupt_deflate)):
             with self.subTest(body=body):
                 opener = MagicMock()
                 opener.open.return_value = FakeResponse(body)

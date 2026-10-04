@@ -10,6 +10,7 @@ import re
 import urllib.error
 import urllib.parse
 import urllib.request
+import zlib
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
@@ -189,7 +190,7 @@ def fetch_snapshot(
         if exc.code == 304:
             return FeedSnapshot("", "", [], etag, last_modified, not_modified=True)
         raise ValueError(f"Feed server returned HTTP {exc.code}.") from exc
-    except (urllib.error.URLError, TimeoutError, OSError, EOFError) as exc:
+    except (urllib.error.URLError, TimeoutError, OSError, EOFError, zlib.error) as exc:
         raise ValueError(f"Could not fetch feed: {exc}") from exc
 
     parsed = feedparser.parse(raw)
