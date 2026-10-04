@@ -136,6 +136,25 @@ class PostingTests(unittest.TestCase):
         with self.assertRaisesRegex(TimeoutError, "response lost"):
             self.post()
 
+    def test_missing_first_seen_time_keeps_retry_key_stable(self):
+        timestamps = iter(("2026-10-01T12:00:00Z", "2026-10-01T12:00:01Z"))
+        self.client.get_current_time_iso = lambda: next(timestamps)
+        keys = []
+
+        def fail_create(data):
+            keys.append(data.rkey)
+            raise TimeoutError("response lost")
+
+        self.client.com.atproto.repo.create_record = fail_create
+        self.client.com.atproto.repo.get_record = lambda params: (_ for _ in ()).throw(
+            RuntimeError("record not found")
+        )
+        with self.assertRaises(TimeoutError):
+            self.post()
+        with self.assertRaises(TimeoutError):
+            self.post()
+        self.assertEqual(keys[0], keys[1])
+
     def test_conflicting_record_is_not_marked_posted(self):
         self.client.com.atproto.repo.create_record = lambda data: (_ for _ in ()).throw(
             RuntimeError("record exists")

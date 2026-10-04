@@ -24,7 +24,9 @@ class WireCreditTests(unittest.TestCase):
             "Reuters": "Reuters",
             "FRANCE 24 with AFP": "AFP",
             "Australian Associated Press": "AAP",
+            "Jane Doe, AAP": "AAP",
             "Staff, The Canadian Press": "The Canadian Press",
+            "Jane Doe, Canadian Press": "The Canadian Press",
             "Ken Sweet, Associated Press ; Reuters": "Associated Press and Reuters",
         }
         for byline, expected in cases.items():

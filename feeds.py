@@ -70,7 +70,8 @@ def _byline(entry) -> str:
 
 _WIRE_CREDITS = (
     (re.compile(r"\bAustralian\s+Associated\s+Press\b", re.I), "AAP"),
-    (re.compile(r"\bThe\s+Canadian\s+Press\b", re.I), "The Canadian Press"),
+    (re.compile(r"\bAAP\b", re.I), "AAP"),
+    (re.compile(r"\b(?:The\s+)?Canadian\s+Press\b", re.I), "The Canadian Press"),
     (re.compile(r"\bAssociated\s+Press\b", re.I), "Associated Press"),
     (re.compile(r"\bReuters\b", re.I), "Reuters"),
     (re.compile(r"\bAFP\b", re.I), "AFP"),
@@ -257,6 +258,7 @@ def fetch_snapshot(
                 "url": article_link,
                 "published_at": _published(entry),
                 "credit": wire_credit(_byline(entry)),
+                "sport": is_sport(entry, article_link),
                 "_order": index,
             }
         )

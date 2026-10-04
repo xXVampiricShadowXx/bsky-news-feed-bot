@@ -335,7 +335,7 @@ class BlueskyPublisher:
         data = models.ComAtprotoRepoCreateRecord.Data(
             repo=repo,
             collection="app.bsky.feed.post",
-            rkey=_record_key(article_url, first_seen_at or now),
+            rkey=_record_key(article_url, first_seen_at),
             record=record,
         )
         try:
