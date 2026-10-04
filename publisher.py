@@ -28,10 +28,10 @@ USER_AGENT = "BskyNewsFeedBot/0.1 (+local RSS reader)"
 ARTICLE_FETCH_TIMEOUT = 10
 MAX_HTML_BYTES = 1_500_000
 MAX_THUMB_DOWNLOAD_BYTES = 8_000_000
-MAX_THUMB_PIXELS = 40_000_000
+MAX_THUMB_PIXELS = 20_000_000
 BLUESKY_IMAGE_CAP = 1_900_000  # keep just under Bluesky's current 2 MB image cap
 _TID_ALPHABET = "234567abcdefghijklmnopqrstuvwxyz"
-_TID_PATTERN = re.compile(r"^[234567][234567abcdefghijklmnopqrstuvwxyz]{12}$")
+_TID_PATTERN = re.compile(r"^[234567abcdefghij][234567abcdefghijklmnopqrstuvwxyz]{12}$")
 
 
 def _link_display_text(article_url: str) -> str:
@@ -63,7 +63,7 @@ def _record_key(article_url: str, first_seen_at: str | None = None) -> str:
         if timestamp.tzinfo is None:
             timestamp = timestamp.replace(tzinfo=timezone.utc)
     except (AttributeError, OverflowError, OSError, TypeError, ValueError):
-        timestamp = datetime.now(timezone.utc)
+        timestamp = datetime(1970, 1, 1, tzinfo=timezone.utc)
     epoch = datetime(1970, 1, 1, tzinfo=timezone.utc)
     delta = timestamp.astimezone(timezone.utc).replace(microsecond=0) - epoch
     timestamp_seconds = max(0, delta.days * 86_400 + delta.seconds)
@@ -139,10 +139,11 @@ def _fetch_article_preview(article_url: str) -> tuple[str | None, str | None, by
     """
     try:
         _validate_public_http_url(article_url)
+        opener = _public_url_opener()
         request = urllib.request.Request(
             article_url, headers={"User-Agent": USER_AGENT, "Accept": "text/html,*/*;q=0.8"}
         )
-        with _public_url_opener().open(request, timeout=ARTICLE_FETCH_TIMEOUT) as response:
+        with opener.open(request, timeout=ARTICLE_FETCH_TIMEOUT) as response:
             content_type = response.headers.get("Content-Type", "")
             if "html" not in content_type.lower() and content_type:
                 return None, None, None
@@ -172,7 +173,7 @@ def _fetch_article_preview(article_url: str) -> tuple[str | None, str | None, by
             image_url = urljoin(final_url, parser.og_image)
             _validate_public_http_url(image_url)
             img_request = urllib.request.Request(image_url, headers={"User-Agent": USER_AGENT})
-            with _public_url_opener().open(img_request, timeout=ARTICLE_FETCH_TIMEOUT) as img_response:
+            with opener.open(img_request, timeout=ARTICLE_FETCH_TIMEOUT) as img_response:
                 img_content_type = img_response.headers.get("Content-Type", "")
                 if "image" in img_content_type.lower() or not img_content_type:
                     downloaded = img_response.read(MAX_THUMB_DOWNLOAD_BYTES + 1)
@@ -195,7 +196,12 @@ def _compress_for_bluesky(raw: bytes) -> bytes | None:
             if opened.width * opened.height > MAX_THUMB_PIXELS:
                 return None
             image = ImageOps.exif_transpose(opened).copy()
-    except (Image.DecompressionBombError, UnidentifiedImageError, OSError):
+    except (
+        UnidentifiedImageError,
+        OSError,
+        Image.DecompressionBombError,
+        Image.DecompressionBombWarning,
+    ):
         return None
 
     image.thumbnail((1600, 1600), Image.Resampling.LANCZOS)
@@ -331,6 +337,7 @@ class BlueskyPublisher:
             created_at=now,
             facets=builder.build_facets(),
             embed=embed,
+            langs=["en"],
         )
         data = models.ComAtprotoRepoCreateRecord.Data(
             repo=repo,
@@ -355,7 +362,11 @@ class BlueskyPublisher:
                     rkey=data.rkey,
                 )
                 existing = client.com.atproto.repo.get_record(params)
-            except Exception:
+            except Exception as recovery_error:
+                if _is_session_error(recovery_error):
+                    self._forget_client()
+                raise exc
+            if not getattr(existing, "uri", None):
                 raise exc
             value = getattr(existing, "value", None)
             record_embed = (
@@ -372,7 +383,7 @@ class BlueskyPublisher:
                 else getattr(existing_external, "uri", None)
             )
             if not existing_url:
-                raise exc
+                raise RuntimeError("Existing Bluesky record uses a different article URL.") from exc
             if canonical_story_key(existing_url) != canonical_story_key(article_url):
                 raise RuntimeError("Existing Bluesky record uses a different article URL.") from exc
             return str(existing.uri)
