@@ -83,9 +83,11 @@ def wire_credit(byline: str) -> str | None:
 
 
 def is_sport(entry, article_url: str) -> bool:
-    tags = {str(tag.get("term", "")).strip().casefold() for tag in entry.get("tags", [])}
-    segments = urllib.parse.urlsplit(article_url).path.casefold().split("/")
-    return bool(tags & {"sport", "sports"} or set(segments) & {"sport", "sports"})
+    categories = [tag.get("term", "") for tag in entry.get("tags", [])]
+    if any(re.search(r"\bsports?\b", category, re.IGNORECASE) for category in categories):
+        return True
+    path = urllib.parse.urlsplit(article_url).path
+    return bool(re.search(r"/sports?(?:/|$)", path, re.IGNORECASE))
 
 
 def _article_url(link: str, base_url: str) -> str:
@@ -134,25 +136,30 @@ def canonical_story_key(url: str) -> str:
     path = parsed.path or "/"
     if path != "/":
         path = path.rstrip("/") or "/"
-    if hostname == "dw.com":
-        match = re.search(r"/(a-\d+)$", path)
-        if match:
-            path = "/" + match.group(1)
-    elif hostname == "abc.net.au" and path.startswith("/news/"):
-        match = re.search(r"/(\d+)$", path)
-        if match:
-            path = "/news/" + match.group(1)
-    elif hostname == "rte.ie" and path.startswith("/news/"):
-        path = re.sub(r"/(\d+)-[^/]+$", r"/\1", path)
     query_pairs = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
     query_pairs = [
         (key, value)
         for key, value in query_pairs
         if not key.lower().startswith("utm_") and key.lower() not in _TRACKING_QUERY_KEYS
-        and not (hostname == "dw.com" and key.lower() == "maca")
     ]
     query_pairs.sort(key=lambda pair: (pair[0].casefold(), pair[1]))
     query = urllib.parse.urlencode(query_pairs, doseq=True)
+
+    story_id = None
+    if hostname == "dw.com":
+        story_id = re.search(r"/(a-\d+)$", path)
+        if story_id:
+            path = f"/{story_id[1]}"
+    elif hostname == "abc.net.au":
+        story_id = re.search(r"^/news/(?:[^/]+/)*(\d+)$", path)
+        if story_id:
+            path = f"/news/{story_id[1]}"
+    elif hostname == "rte.ie":
+        story_id = re.search(r"^/news/(?:[^/]+/)*(\d+)-[^/]+$", path)
+        if story_id:
+            path = f"/news/{story_id[1]}"
+    if story_id:
+        query = ""
 
     # Scheme, www, fragments, trailing slashes, query order, and common tracking
     # parameters do not make a distinct story for this bot's duplicate guard.
