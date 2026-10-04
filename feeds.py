@@ -10,12 +10,14 @@ import re
 import urllib.error
 import urllib.parse
 import urllib.request
+import zlib
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
 import feedparser
 
 from netsafe import _public_url_opener
+from topics import assess
 
 
 USER_AGENT = "BskyNewsFeedBot/0.1 (+local RSS reader)"
@@ -61,20 +63,23 @@ def _published(entry) -> str | None:
 
 
 def _byline(entry) -> str:
-    names = [author.get("name", "") for author in entry.get("authors", [])]
-    return _clean_text(" ; ".join(names) or entry.get("author", ""))
+    authors = entry.get("authors") or []
+    names = [str(author.get("name", "")) for author in authors]
+    names = [name for name in names if name.strip()]
+    return _clean_text(" ; ".join(names) or entry.get("author"))
 
 
 def wire_credit(byline: str) -> str | None:
+    text = re.sub(r"\bAustralian Associated Press\b", "AAP", byline, flags=re.I)
     agencies = [
-        ("Associated Press", r"\b(?<!Australian )Associated Press\b|\bAP\b"),
+        ("Associated Press", r"\b(?:Associated Press|AP)\b"),
         ("Reuters", r"\bReuters\b"),
-        ("AFP", r"\bAFP\b|\bAgence France[- ]Presse\b"),
-        ("AAP", r"\bAustralian Associated Press\b|\bAAP\b"),
+        ("AFP", r"\b(?:AFP|Agence France[- ]Presse)\b"),
+        ("AAP", r"\bAAP\b"),
         ("The Canadian Press", r"\b(?:The )?Canadian Press\b"),
     ]
-    credits = [name for name, pattern in agencies if re.search(pattern, byline, re.IGNORECASE)]
-    return " and ".join(credits) or None
+    found = [name for name, pattern in agencies if re.search(pattern, text, re.I)]
+    return " and ".join(found) or None
 
 
 def is_sport(entry, article_url: str) -> bool:
@@ -197,7 +202,7 @@ def fetch_snapshot(
         try:
             with gzip.GzipFile(fileobj=io.BytesIO(raw)) as compressed:
                 raw = compressed.read(MAX_FEED_BYTES + 1)
-        except (OSError, EOFError) as exc:
+        except (OSError, EOFError, zlib.error) as exc:
             raise ValueError("Feed contains invalid gzip data.") from exc
         if len(raw) > MAX_FEED_BYTES:
             raise ValueError("Feed is larger than 4 MB; refusing to load it.")
@@ -218,8 +223,16 @@ def fetch_snapshot(
             if str(possible_id).startswith(("http://", "https://")):
                 raw_link = str(possible_id)
         article_link = _article_url(raw_link, response_url)
-        if not headline or not article_link or is_sport(entry, article_link):
+        if not headline or not article_link:
             continue
+        if is_sport(entry, article_link):
+            continue
+        geopolitical, _score, topic_reason = assess(
+            headline,
+            _clean_text(entry.get("summary")),
+            [tag.get("term", "") for tag in entry.get("tags", [])],
+            article_link,
+        )
         entries.append(
             {
                 # Use a normalized key for deduplication, but preserve the original
@@ -229,6 +242,8 @@ def fetch_snapshot(
                 "url": article_link,
                 "published_at": _published(entry),
                 "credit": wire_credit(_byline(entry)),
+                "geopolitical": geopolitical,
+                "topic_reason": topic_reason,
                 "_order": index,
             }
         )

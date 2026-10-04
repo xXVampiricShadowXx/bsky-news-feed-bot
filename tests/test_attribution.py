@@ -45,6 +45,17 @@ class WireCreditTests(unittest.TestCase):
         )
         self.assertEqual(feeds.wire_credit(feeds._byline(parsed.entries[0])), "Associated Press")
 
+    def test_feed_entry_uses_all_authors(self):
+        entry = {
+            "author": "Jane Doe",
+            "authors": [{"name": "Jane Doe"}, {"name": "Reuters"}],
+        }
+        self.assertEqual(feeds._byline(entry), "Jane Doe ; Reuters")
+
+    def test_feed_entry_falls_back_to_singular_author_without_author_names(self):
+        entry = {"author": "Reuters", "authors": [{"name": ""}]}
+        self.assertEqual(feeds._byline(entry), "Reuters")
+
     def test_multiple_authors_and_agencies_are_not_duplicated(self):
         byline = feeds._byline({"authors": [{"name": "Reuters"}, {"name": "Reuters and AFP"}]})
         self.assertEqual("Reuters and AFP", feeds.wire_credit(byline))

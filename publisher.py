@@ -29,9 +29,24 @@ MAX_HTML_BYTES = 1_500_000
 MAX_THUMB_DOWNLOAD_BYTES = 8_000_000
 MAX_THUMB_PIXELS = 20_000_000
 BLUESKY_IMAGE_CAP = 1_900_000  # keep just under Bluesky's current 2 MB image cap
-
 _TID_ALPHABET = "234567abcdefghijklmnopqrstuvwxyz"
 _TID_PATTERN = r"^[234567abcdefghij][234567abcdefghijklmnopqrstuvwxyz]{12}$"
+
+
+def _record_key(article_url: str, first_seen_at: str | None = None) -> str:
+    """Encode a stable story identity as a valid 13-character AT Protocol TID."""
+    identity = canonical_story_key(article_url)
+    if first_seen_at:
+        try:
+            seen = datetime.fromisoformat(first_seen_at.replace("Z", "+00:00"))
+            if seen.tzinfo is None:
+                seen = seen.replace(tzinfo=timezone.utc)
+            identity += "\n" + seen.astimezone(timezone.utc).isoformat()
+        except (ValueError, OverflowError, OSError):
+            pass
+    digest = hashlib.sha256(identity.encode("utf-8")).digest()
+    value = int.from_bytes(digest[:8], "big") & ((1 << 63) - 1)
+    return "".join(_TID_ALPHABET[(value >> shift) & 31] for shift in range(60, -1, -5))
 
 
 def attribution_line(source_name: str, credit: str | None = None) -> str:
@@ -39,26 +54,6 @@ def attribution_line(source_name: str, credit: str | None = None) -> str:
     if credit and credit.strip() and credit.strip().casefold() != source_name.strip().casefold():
         line += f", with {credit.strip()}"
     return line
-
-
-def _record_key(article_url: str, first_seen_at: str | None = None) -> str:
-    """A deterministic TID: persisted discovery time plus URL-derived subsecond/clock bits."""
-    digest = int.from_bytes(
-        hashlib.sha256(canonical_story_key(article_url).encode("utf-8")).digest(), "big"
-    )
-    value = digest & ((1 << 63) - 1)
-    if first_seen_at:
-        try:
-            seen = datetime.fromisoformat(first_seen_at.replace("Z", "+00:00"))
-            if seen.tzinfo is None:
-                seen = seen.replace(tzinfo=timezone.utc)
-            seconds = int(seen.timestamp())
-            micros = seconds * 1_000_000 + digest % 1_000_000
-            if 0 <= micros < (1 << 53):
-                value = (micros << 10) | ((digest >> 20) & 1023)
-        except (ValueError, OverflowError, OSError):
-            pass
-    return "".join(_TID_ALPHABET[(value >> shift) & 31] for shift in range(60, -1, -5))
 
 
 def _record_article_url(record) -> str | None:
@@ -304,6 +299,7 @@ class BlueskyPublisher:
         embed_description = (og_description or f"via {source_name}").strip()[:1000]
 
         client = self._get_client()
+        rkey = _record_key(article_url, first_seen_at)
         try:
             external = models.AppBskyEmbedExternal.External(
                 uri=article_url,
@@ -314,7 +310,6 @@ class BlueskyPublisher:
                 upload = client.upload_blob(thumb_bytes)
                 external.thumb = upload.blob
             embed = models.AppBskyEmbedExternal.Main(external=external)
-            rkey = _record_key(article_url, first_seen_at)
             data = models.ComAtprotoRepoCreateRecord.Data(
                 repo=self.handle,
                 collection="app.bsky.feed.post",
@@ -324,6 +319,7 @@ class BlueskyPublisher:
                     facets=text.build_facets(),
                     embed=embed,
                     created_at=client.get_current_time_iso(),
+                    langs=["en"],
                 ),
             )
             try:

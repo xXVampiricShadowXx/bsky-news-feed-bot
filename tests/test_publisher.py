@@ -11,6 +11,35 @@ import publisher
 
 
 class PreviewTests(unittest.TestCase):
+    def test_article_and_thumbnail_use_public_only_opener(self):
+        article = MagicMock()
+        article.__enter__.return_value = article
+        article.headers = Message()
+        article.headers["Content-Type"] = "text/html; charset=utf-8"
+        article.read.return_value = b'<head><meta property="og:image" content="/image.png"></head>'
+        article.geturl.return_value = "https://example.com/story"
+        image = MagicMock()
+        image.__enter__.return_value = image
+        image.headers = {"Content-Type": "image/png"}
+        image.read.return_value = b"image"
+        opener = MagicMock()
+        opener.open.side_effect = [article, image]
+        with patch.object(publisher, "_public_url_opener", return_value=opener), \
+             patch.object(publisher, "_validate_public_http_url") as validate, \
+             patch.object(publisher.urllib.request, "urlopen") as unsafe:
+            self.assertEqual((None, None, b"image"), publisher._fetch_article_preview("https://example.com/story"))
+        self.assertEqual(
+            ["https://example.com/story", "https://example.com/image.png"],
+            [call.args[0] for call in validate.call_args_list],
+        )
+        self.assertEqual(2, opener.open.call_count)
+        unsafe.assert_not_called()
+
+    def test_private_preview_degrades_without_opening_url(self):
+        with patch.object(publisher, "_public_url_opener") as opener:
+            self.assertEqual((None, None, None), publisher._fetch_article_preview("http://127.0.0.1/story"))
+        opener.assert_not_called()
+
     def test_private_or_non_http_destinations_are_rejected(self):
         for url in ("http://127.0.0.1/x", "http://10.0.0.1/x", "file:///etc/passwd"):
             with self.subTest(url=url), self.assertRaises(ValueError):
@@ -170,18 +199,43 @@ class PostingTests(unittest.TestCase):
             return
         validate_tid(key, None)
 
-    def test_worker_metadata_is_used_in_post(self):
+    def test_worker_attribution_and_first_seen_are_supported(self):
         submitted = []
         self.client.com.atproto.repo.create_record = lambda data: (
             submitted.append(data) or SimpleNamespace(uri="at://did:plc:bot/app.bsky.feed.post/key")
         )
         seen = "2026-10-02T03:43:29+00:00"
         self.post(credit="Reuters", first_seen_at=seen)
-        self.assertEqual(publisher._record_key(self.article, seen), submitted[0].rkey)
         self.assertIn("(Source: Example, with Reuters)", submitted[0].record.text)
+        self.assertEqual(publisher._record_key(self.article, seen), submitted[0].rkey)
+        self.assertEqual(
+            submitted[0].rkey, publisher._record_key(self.article, "2026-10-02T03:43:29Z")
+        )
         self.assertEqual("app.bsky.feed.post", submitted[0].collection)
         self.assertEqual(self.poster.handle, submitted[0].repo)
         self.assertEqual("2026-10-01T12:00:00Z", submitted[0].record.created_at)
+
+    def test_many_stories_seen_together_have_distinct_record_keys(self):
+        keys = {publisher._record_key(f"https://example.com/{i}", "2026-10-02T03:43:29Z")
+                for i in range(2000)}
+        self.assertEqual(2000, len(keys))
+
+    def test_typed_existing_record_is_recovered(self):
+        self.client.com.atproto.repo.create_record = lambda data: (_ for _ in ()).throw(
+            TimeoutError("response lost")
+        )
+        value = publisher.models.AppBskyFeedPost.Record(
+            text="News", created_at=self.client.get_current_time_iso(),
+            embed=publisher.models.AppBskyEmbedExternal.Main(
+                external=publisher.models.AppBskyEmbedExternal.External(
+                    uri=self.article, title="News", description="",
+                )
+            ),
+        )
+        self.client.com.atproto.repo.get_record = lambda params: SimpleNamespace(
+            value=value, uri="at://did:plc:bot/app.bsky.feed.post/recovered",
+        )
+        self.assertEqual("at://did:plc:bot/app.bsky.feed.post/recovered", self.post())
 
     def test_record_keys_normalize_timezones_and_invalid_dates(self):
         self.assertEqual(
