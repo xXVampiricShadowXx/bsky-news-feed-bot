@@ -10,16 +10,19 @@ import re
 import urllib.error
 import urllib.parse
 import urllib.request
+import zlib
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
 import feedparser
 
 from netsafe import _public_url_opener
+from topics import assess
 
 
 USER_AGENT = "BskyNewsFeedBot/0.1 (+local RSS reader)"
 TIMEOUT_SECONDS = 25
+MAX_FEED_BYTES = 4_000_000
 
 
 @dataclass
@@ -57,6 +60,34 @@ def _published(entry) -> str | None:
         return datetime.fromtimestamp(stamp, tz=timezone.utc).isoformat(timespec="seconds")
     except (TypeError, ValueError, OverflowError):
         return None
+
+
+def _byline(entry) -> str:
+    authors = entry.get("authors") or []
+    names = [str(author.get("name", "")) for author in authors]
+    names = [name for name in names if name.strip()]
+    return _clean_text(" ; ".join(names) or entry.get("author"))
+
+
+def wire_credit(byline: str) -> str | None:
+    text = re.sub(r"\bAustralian Associated Press\b", "AAP", byline, flags=re.I)
+    agencies = [
+        ("Associated Press", r"\b(?:Associated Press|AP)\b"),
+        ("Reuters", r"\bReuters\b"),
+        ("AFP", r"\b(?:AFP|Agence France[- ]Presse)\b"),
+        ("AAP", r"\bAAP\b"),
+        ("The Canadian Press", r"\b(?:The )?Canadian Press\b"),
+    ]
+    found = [name for name, pattern in agencies if re.search(pattern, text, re.I)]
+    return " and ".join(found) or None
+
+
+def is_sport(entry, article_url: str) -> bool:
+    categories = [tag.get("term", "") for tag in entry.get("tags", [])]
+    if any(re.search(r"\bsports?\b", category, re.IGNORECASE) for category in categories):
+        return True
+    path = urllib.parse.urlsplit(article_url).path
+    return bool(re.search(r"/sports?(?:/|$)", path, re.IGNORECASE))
 
 
 def _article_url(link: str, base_url: str) -> str:
@@ -105,20 +136,6 @@ def canonical_story_key(url: str) -> str:
     path = parsed.path or "/"
     if path != "/":
         path = path.rstrip("/") or "/"
-
-    if hostname == "dw.com":
-        match = re.search(r"(?:^|/)(a-\d+)(?:/|$)", path)
-        if match:
-            return urllib.parse.urlunsplit(("https", hostname, f"/{match.group(1)}", "", ""))
-    elif hostname == "abc.net.au":
-        match = re.search(r"^/news/\d{4}-\d{2}-\d{2}/[^/]+/(\d+)$", path)
-        if match:
-            path = f"/news/{match.group(1)}"
-    elif hostname == "rte.ie":
-        match = re.search(r"^(/news/.*?/\d{4}/\d{4}/)(\d+)(?:-[^/]*)?$", path)
-        if match:
-            path = f"{match.group(1)}{match.group(2)}"
-
     query_pairs = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
     query_pairs = [
         (key, value)
@@ -128,61 +145,25 @@ def canonical_story_key(url: str) -> str:
     query_pairs.sort(key=lambda pair: (pair[0].casefold(), pair[1]))
     query = urllib.parse.urlencode(query_pairs, doseq=True)
 
+    story_id = None
+    if hostname == "dw.com":
+        story_id = re.search(r"/(a-\d+)$", path)
+        if story_id:
+            path = f"/{story_id[1]}"
+    elif hostname == "abc.net.au":
+        story_id = re.search(r"^/news/(?:[^/]+/)*(\d+)$", path)
+        if story_id:
+            path = f"/news/{story_id[1]}"
+    elif hostname == "rte.ie":
+        story_id = re.search(r"^/news/(?:[^/]+/)*(\d+)-[^/]+$", path)
+        if story_id:
+            path = f"/news/{story_id[1]}"
+    if story_id:
+        query = ""
+
     # Scheme, www, fragments, trailing slashes, query order, and common tracking
     # parameters do not make a distinct story for this bot's duplicate guard.
     return urllib.parse.urlunsplit(("https", hostname, path, query, ""))
-
-
-def _byline(entry) -> str:
-    authors = entry.get("authors") or []
-    for author in authors:
-        name = author.get("name") if isinstance(author, dict) else None
-        if name:
-            return str(name).strip()
-    author_detail = entry.get("author_detail") or {}
-    if isinstance(author_detail, dict) and author_detail.get("name"):
-        return str(author_detail["name"]).strip()
-    for key in ("author", "dc_creator", "creator"):
-        value = entry.get(key)
-        if value:
-            return str(value).strip()
-    return ""
-
-
-def wire_credit(byline: str | None) -> str | None:
-    if not byline:
-        return None
-
-    agencies = (
-        (r"\bAustralian Associated Press\b|\bAAP\b", "AAP"),
-        (r"\bThe Canadian Press\b|\bCanadian Press\b|\bCP\b", "The Canadian Press"),
-        (r"(?<!Australian )\bAssociated Press\b|\bAP\b", "Associated Press"),
-        (r"\bReuters\b", "Reuters"),
-        (r"\bAFP\b", "AFP"),
-    )
-    matches = []
-    for pattern, agency in agencies:
-        match = re.search(pattern, byline, re.IGNORECASE)
-        if match:
-            matches.append((match.start(), agency))
-    credits = []
-    for _, agency in sorted(matches):
-        if agency not in credits:
-            credits.append(agency)
-    return " and ".join(credits) or None
-
-
-def is_sport(entry, url: str) -> bool:
-    if any(
-        str(tag.get("term", "")).strip().casefold() in {"sport", "sports"}
-        for tag in entry.get("tags") or []
-        if isinstance(tag, dict)
-    ):
-        return True
-    return any(
-        segment.casefold() in {"sport", "sports"}
-        for segment in urllib.parse.urlsplit(url).path.split("/")
-    )
 
 
 def fetch_snapshot(
@@ -204,8 +185,8 @@ def fetch_snapshot(
 
     try:
         with _public_url_opener().open(request, timeout=TIMEOUT_SECONDS) as response:
-            raw = response.read(4_000_001)
-            if len(raw) > 4_000_000:
+            raw = response.read(MAX_FEED_BYTES + 1)
+            if len(raw) > MAX_FEED_BYTES:
                 raise ValueError("Feed is larger than 4 MB; refusing to load it.")
             response_url = response.geturl()
             response_etag = response.headers.get("ETag") or etag
@@ -220,11 +201,11 @@ def fetch_snapshot(
     if raw.startswith(b"\x1f\x8b"):
         try:
             with gzip.GzipFile(fileobj=io.BytesIO(raw)) as compressed:
-                raw = compressed.read(4_000_001)
-            if len(raw) > 4_000_000:
-                raise ValueError("Feed is larger than 4 MB; refusing to load it.")
-        except (EOFError, OSError):
-            pass
+                raw = compressed.read(MAX_FEED_BYTES + 1)
+        except (OSError, EOFError, zlib.error) as exc:
+            raise ValueError("Feed contains invalid gzip data.") from exc
+        if len(raw) > MAX_FEED_BYTES:
+            raise ValueError("Feed is larger than 4 MB; refusing to load it.")
 
     parsed = feedparser.parse(raw)
     if parsed.bozo and not parsed.entries:
@@ -244,6 +225,14 @@ def fetch_snapshot(
         article_link = _article_url(raw_link, response_url)
         if not headline or not article_link:
             continue
+        if is_sport(entry, article_link):
+            continue
+        geopolitical, _score, topic_reason = assess(
+            headline,
+            _clean_text(entry.get("summary")),
+            [tag.get("term", "") for tag in entry.get("tags", [])],
+            article_link,
+        )
         entries.append(
             {
                 # Use a normalized key for deduplication, but preserve the original
@@ -253,6 +242,8 @@ def fetch_snapshot(
                 "url": article_link,
                 "published_at": _published(entry),
                 "credit": wire_credit(_byline(entry)),
+                "geopolitical": geopolitical,
+                "topic_reason": topic_reason,
                 "_order": index,
             }
         )

@@ -6,7 +6,6 @@ from __future__ import annotations
 import hashlib
 import io
 import os
-import re
 import threading
 import urllib.request
 from datetime import datetime, timezone
@@ -19,11 +18,7 @@ from atproto_client.exceptions import BadRequestError, LoginRequiredError, Unaut
 from PIL import Image, ImageOps, UnidentifiedImageError
 
 from feeds import canonical_story_key
-from netsafe import (
-    _connect_public_socket,
-    _public_url_opener,
-    _validate_public_http_url,
-)
+from netsafe import _connect_public_socket, _public_url_opener, _validate_public_http_url
 
 # Error names Bluesky uses when it is telling us the login itself is no good.
 _SESSION_ERROR_NAMES = {"ExpiredToken", "InvalidToken", "AuthenticationRequired"}
@@ -32,43 +27,40 @@ USER_AGENT = "BskyNewsFeedBot/0.1 (+local RSS reader)"
 ARTICLE_FETCH_TIMEOUT = 10
 MAX_HTML_BYTES = 1_500_000
 MAX_THUMB_DOWNLOAD_BYTES = 8_000_000
-BLUESKY_IMAGE_CAP = 1_900_000  # keep just under Bluesky's current 2 MB image cap
 MAX_THUMB_PIXELS = 20_000_000
+BLUESKY_IMAGE_CAP = 1_900_000  # keep just under Bluesky's current 2 MB image cap
 _TID_ALPHABET = "234567abcdefghijklmnopqrstuvwxyz"
-_TID_PATTERN = re.compile(r"^[2-7a-z]{13}$")
+_TID_PATTERN = r"^[234567abcdefghij][234567abcdefghijklmnopqrstuvwxyz]{12}$"
 
 
-def attribution_line(source_name: str, wire_credit: str | None = None) -> str:
-    attribution = f"Source: {source_name.strip()}"
-    if wire_credit and wire_credit.strip().casefold() != source_name.strip().casefold():
-        attribution += f", with {wire_credit.strip()}"
-    return attribution
-
-
-def _record_key(article_url: str, seen: str | None = None) -> str:
-    digest = hashlib.sha256(canonical_story_key(article_url).encode("utf-8")).digest()
-    timestamp = None
-    if seen:
+def _record_key(article_url: str, first_seen_at: str | None = None) -> str:
+    """Encode a stable story identity as a valid 13-character AT Protocol TID."""
+    identity = canonical_story_key(article_url)
+    if first_seen_at:
         try:
-            parsed = datetime.fromisoformat(seen.replace("Z", "+00:00"))
-            if parsed.tzinfo is None:
-                parsed = parsed.replace(tzinfo=timezone.utc)
-            timestamp = int(parsed.timestamp() * 1_000_000)
-        except (OverflowError, OSError, ValueError):
+            seen = datetime.fromisoformat(first_seen_at.replace("Z", "+00:00"))
+            if seen.tzinfo is None:
+                seen = seen.replace(tzinfo=timezone.utc)
+            identity += "\n" + seen.astimezone(timezone.utc).isoformat()
+        except (ValueError, OverflowError, OSError):
             pass
+    digest = hashlib.sha256(identity.encode("utf-8")).digest()
+    value = int.from_bytes(digest[:8], "big") & ((1 << 63) - 1)
+    return "".join(_TID_ALPHABET[(value >> shift) & 31] for shift in range(60, -1, -5))
 
-    if timestamp is None:
-        value = int.from_bytes(digest[:8], "big") & ((1 << 63) - 1)
-    else:
-        timestamp &= (1 << 53) - 1
-        clock_id = int.from_bytes(digest[:2], "big") & 0x3FF
-        value = (timestamp << 10) | clock_id
 
-    key = []
-    for _ in range(13):
-        key.append(_TID_ALPHABET[value & 31])
-        value >>= 5
-    return "".join(reversed(key))
+def attribution_line(source_name: str, credit: str | None = None) -> str:
+    line = f"Source: {source_name}"
+    if credit and credit.strip() and credit.strip().casefold() != source_name.strip().casefold():
+        line += f", with {credit.strip()}"
+    return line
+
+
+def _record_article_url(record) -> str | None:
+    def field(value, name):
+        return value.get(name) if isinstance(value, dict) else getattr(value, name, None)
+
+    return field(field(field(record, "embed"), "external"), "uri")
 
 
 def _link_display_text(article_url: str) -> str:
@@ -140,11 +132,12 @@ def _fetch_article_preview(article_url: str) -> tuple[str | None, str | None, by
     doesn't get posted, only the reason it posts with the source's logo instead.
     """
     try:
+        _validate_public_http_url(article_url)
+        opener = _public_url_opener()
         request = urllib.request.Request(
             article_url, headers={"User-Agent": USER_AGENT, "Accept": "text/html,*/*;q=0.8"}
         )
-        _validate_public_http_url(article_url)
-        with _public_url_opener().open(request, timeout=ARTICLE_FETCH_TIMEOUT) as response:
+        with opener.open(request, timeout=ARTICLE_FETCH_TIMEOUT) as response:
             content_type = response.headers.get("Content-Type", "")
             if "html" not in content_type.lower() and content_type:
                 return None, None, None
@@ -174,9 +167,7 @@ def _fetch_article_preview(article_url: str) -> tuple[str | None, str | None, by
             image_url = urljoin(final_url, parser.og_image)
             _validate_public_http_url(image_url)
             img_request = urllib.request.Request(image_url, headers={"User-Agent": USER_AGENT})
-            with _public_url_opener().open(
-                img_request, timeout=ARTICLE_FETCH_TIMEOUT
-            ) as img_response:
+            with opener.open(img_request, timeout=ARTICLE_FETCH_TIMEOUT) as img_response:
                 img_content_type = img_response.headers.get("Content-Type", "")
                 if "image" in img_content_type.lower() or not img_content_type:
                     downloaded = img_response.read(MAX_THUMB_DOWNLOAD_BYTES + 1)
@@ -199,7 +190,7 @@ def _compress_for_bluesky(raw: bytes) -> bytes | None:
             if opened.width * opened.height > MAX_THUMB_PIXELS:
                 return None
             image = ImageOps.exif_transpose(opened).copy()
-    except (Image.DecompressionBombError, UnidentifiedImageError, OSError):
+    except (UnidentifiedImageError, OSError, Image.DecompressionBombError, Image.DecompressionBombWarning):
         return None
 
     image.thumbnail((1600, 1600), Image.Resampling.LANCZOS)
@@ -290,7 +281,7 @@ class BlueskyPublisher:
                 "The full headline, source line, and link exceed Bluesky's post-length limit. "
                 "This story was left unposted rather than shortening the headline."
             )
-        builder = client_utils.TextBuilder().text(lead).link(link_text, article_url)
+        text = client_utils.TextBuilder().text(lead).link(link_text, article_url)
 
         # Try the article's own preview image first; fall back to the source's logo;
         # fall back again to a text-only card if even that isn't available. Nothing
@@ -308,7 +299,7 @@ class BlueskyPublisher:
         embed_description = (og_description or f"via {source_name}").strip()[:1000]
 
         client = self._get_client()
-        record_key = _record_key(article_url, first_seen_at)
+        rkey = _record_key(article_url, first_seen_at)
         try:
             external = models.AppBskyEmbedExternal.External(
                 uri=article_url,
@@ -319,52 +310,47 @@ class BlueskyPublisher:
                 upload = client.upload_blob(thumb_bytes)
                 external.thumb = upload.blob
             embed = models.AppBskyEmbedExternal.Main(external=external)
-            record = models.AppBskyFeedPost.Record(
-                created_at=client.get_current_time_iso(),
-                text=builder.build_text(),
-                embed=embed,
-                facets=builder.build_facets(),
+            data = models.ComAtprotoRepoCreateRecord.Data(
+                repo=self.handle,
+                collection="app.bsky.feed.post",
+                rkey=rkey,
+                record=models.AppBskyFeedPost.Record(
+                    text=text.build_text(),
+                    facets=text.build_facets(),
+                    embed=embed,
+                    created_at=client.get_current_time_iso(),
+                    langs=["en"],
+                ),
             )
-            result = client.com.atproto.repo.create_record(
-                models.ComAtprotoRepoCreateRecord.Data(
-                    repo=self.handle,
-                    collection="app.bsky.feed.post",
-                    rkey=record_key,
-                    record=record,
-                )
-            )
+            try:
+                result = client.com.atproto.repo.create_record(data)
+            except Exception as create_error:
+                if _is_session_error(create_error):
+                    raise
+                # A timeout may mean the write succeeded. Only recover a matching
+                # article at the exact deterministic key; never accept a collision.
+                try:
+                    existing = client.com.atproto.repo.get_record(
+                        models.ComAtprotoRepoGetRecord.Params(
+                            repo=self.handle, collection=data.collection, rkey=rkey
+                        )
+                    )
+                except Exception as recovery_error:
+                    if _is_session_error(recovery_error):
+                        self._forget_client()
+                    existing = None
+                if existing is None or not getattr(existing, "uri", None):
+                    raise
+                existing_url = _record_article_url(getattr(existing, "value", None))
+                if not existing_url or canonical_story_key(existing_url) != canonical_story_key(article_url):
+                    raise RuntimeError("The deterministic record key belongs to a different article.")
+                result = existing
         except Exception as exc:
+            # If Bluesky rejected the login itself (e.g. a session that could no longer
+            # refresh), drop the cached login so the next attempt signs in fresh instead
+            # of repeating the same failure forever. Other errors (network blips, rate
+            # limits) keep the login and just go through the normal retry schedule.
             if _is_session_error(exc):
                 self._forget_client()
-                raise
-            try:
-                existing = client.com.atproto.repo.get_record(
-                    models.ComAtprotoRepoGetRecord.Params(
-                        repo=self.handle,
-                        collection="app.bsky.feed.post",
-                        rkey=record_key,
-                    )
-                )
-            except Exception:
-                raise exc
-
-            value = getattr(existing, "value", None)
-            if isinstance(value, dict):
-                embed_value = value.get("embed", {})
-                external = embed_value.get("external", {}) if isinstance(embed_value, dict) else {}
-                existing_url = external.get("uri") if isinstance(external, dict) else None
-            else:
-                embed_value = getattr(value, "embed", None)
-                external = getattr(embed_value, "external", None)
-                existing_url = getattr(external, "uri", None)
-            if (
-                existing_url
-                and canonical_story_key(existing_url) == canonical_story_key(article_url)
-            ):
-                return str(existing.uri)
-            if existing_url:
-                raise RuntimeError(
-                    "The existing record key belongs to a different article."
-                ) from exc
-            raise exc
+            raise
         return str(result.uri)
