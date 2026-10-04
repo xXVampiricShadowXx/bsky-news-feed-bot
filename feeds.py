@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import calendar
+import gzip
 import html
 import re
 import urllib.error
@@ -103,6 +104,20 @@ def canonical_story_key(url: str) -> str:
     path = parsed.path or "/"
     if path != "/":
         path = path.rstrip("/") or "/"
+
+    if hostname == "dw.com":
+        match = re.search(r"(?:^|/)(a-\d+)(?:/|$)", path)
+        if match:
+            return urllib.parse.urlunsplit(("https", hostname, f"/{match.group(1)}", "", ""))
+    elif hostname == "abc.net.au":
+        match = re.search(r"^/news/\d{4}-\d{2}-\d{2}/[^/]+/(\d+)$", path)
+        if match:
+            path = f"/news/{match.group(1)}"
+    elif hostname == "rte.ie":
+        match = re.search(r"^(/news/.*?/\d{4}/\d{4}/)(\d+)(?:-[^/]*)?$", path)
+        if match:
+            path = f"{match.group(1)}{match.group(2)}"
+
     query_pairs = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
     query_pairs = [
         (key, value)
@@ -115,6 +130,58 @@ def canonical_story_key(url: str) -> str:
     # Scheme, www, fragments, trailing slashes, query order, and common tracking
     # parameters do not make a distinct story for this bot's duplicate guard.
     return urllib.parse.urlunsplit(("https", hostname, path, query, ""))
+
+
+def _byline(entry) -> str:
+    authors = entry.get("authors") or []
+    for author in authors:
+        name = author.get("name") if isinstance(author, dict) else None
+        if name:
+            return str(name).strip()
+    author_detail = entry.get("author_detail") or {}
+    if isinstance(author_detail, dict) and author_detail.get("name"):
+        return str(author_detail["name"]).strip()
+    for key in ("author", "dc_creator", "creator"):
+        value = entry.get(key)
+        if value:
+            return str(value).strip()
+    return ""
+
+
+def wire_credit(byline: str | None) -> str | None:
+    if not byline:
+        return None
+
+    agencies = (
+        (r"\bAustralian Associated Press\b|\bAAP\b", "AAP"),
+        (r"\bThe Canadian Press\b|\bCanadian Press\b|\bCP\b", "The Canadian Press"),
+        (r"(?<!Australian )\bAssociated Press\b|\bAP\b", "Associated Press"),
+        (r"\bReuters\b", "Reuters"),
+        (r"\bAFP\b", "AFP"),
+    )
+    matches = []
+    for pattern, agency in agencies:
+        match = re.search(pattern, byline, re.IGNORECASE)
+        if match:
+            matches.append((match.start(), agency))
+    credits = []
+    for _, agency in sorted(matches):
+        if agency not in credits:
+            credits.append(agency)
+    return " and ".join(credits) or None
+
+
+def is_sport(entry, url: str) -> bool:
+    if any(
+        str(tag.get("term", "")).strip().casefold() in {"sport", "sports"}
+        for tag in entry.get("tags") or []
+        if isinstance(tag, dict)
+    ):
+        return True
+    return any(
+        segment.casefold() in {"sport", "sports"}
+        for segment in urllib.parse.urlsplit(url).path.split("/")
+    )
 
 
 def fetch_snapshot(
@@ -148,6 +215,12 @@ def fetch_snapshot(
         raise ValueError(f"Feed server returned HTTP {exc.code}.") from exc
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         raise ValueError(f"Could not fetch feed: {exc}") from exc
+
+    if raw.startswith(b"\x1f\x8b"):
+        try:
+            raw = gzip.decompress(raw)
+        except (EOFError, OSError):
+            pass
 
     parsed = feedparser.parse(raw)
     if parsed.bozo and not parsed.entries:
