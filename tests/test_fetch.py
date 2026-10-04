@@ -27,6 +27,38 @@ class FakeResponse(io.BytesIO):
 
 
 class FetchTests(unittest.TestCase):
+    def fetch(self, raw):
+        opener = MagicMock()
+        opener.open.return_value = FakeResponse(raw)
+        with patch.object(feeds, "_public_url_opener", return_value=opener):
+            return feeds.fetch_snapshot("https://news.un.org/feed/subscribe/en/news/all/rss.xml")
+
+    def test_plain_xml_remains_supported(self):
+        self.assertEqual("UN News", self.fetch(RSS).title)
+
+    def test_gzip_expansion_is_bounded(self):
+        raw = gzip.compress(b" " * (feeds.MAX_FEED_BYTES + 1))
+        with self.assertRaisesRegex(ValueError, "larger than 4 MB"):
+            self.fetch(raw)
+
+    def test_invalid_gzip_is_reported_as_a_feed_error(self):
+        with self.assertRaisesRegex(ValueError, "invalid gzip"):
+            self.fetch(b"\x1f\x8btruncated")
+
+    def test_feed_metadata_and_sport_filter_reach_normalized_entries(self):
+        raw = b"""<rss version="2.0"><channel><title>News</title>
+        <item><title>Security Council meets on Sudan ceasefire</title>
+        <link>https://example.com/world</link><author>Reuters</author></item>
+        <item><title>Local bakery opens</title><link>https://example.com/local</link></item>
+        <item><title>Football match</title><link>https://example.com/sport/1</link></item>
+        </channel></rss>"""
+        entries = self.fetch(raw).entries
+        self.assertEqual(2, len(entries))
+        self.assertEqual("Reuters", entries[0]["credit"])
+        self.assertTrue(entries[0]["geopolitical"])
+        self.assertFalse(entries[1]["geopolitical"])
+        self.assertIn("not geopolitical", entries[1]["topic_reason"])
+
     def test_gzip_body_without_content_encoding_header_is_decoded(self):
         opener = MagicMock()
         opener.open.return_value = FakeResponse(gzip.compress(RSS))
