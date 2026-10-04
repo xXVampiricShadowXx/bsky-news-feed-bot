@@ -64,9 +64,9 @@ def _published(entry) -> str | None:
 
 def _byline(entry) -> str:
     authors = entry.get("authors") or []
-    return _clean_text(entry.get("author") or " ; ".join(
-        str(author.get("name", "")) for author in authors
-    ))
+    names = [str(author.get("name", "")) for author in authors]
+    names = [name for name in names if name.strip()]
+    return _clean_text(" ; ".join(names) or entry.get("author"))
 
 
 def wire_credit(byline: str) -> str | None:
