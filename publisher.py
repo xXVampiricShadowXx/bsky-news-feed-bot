@@ -3,10 +3,13 @@ login/session handling."""
 
 from __future__ import annotations
 
+import hashlib
 import io
 import os
+import re
 import threading
 import urllib.request
+from datetime import datetime, timezone
 from html.parser import HTMLParser
 from pathlib import Path
 from urllib.parse import urljoin, urlsplit
@@ -15,6 +18,9 @@ from atproto import Client, client_utils, models
 from atproto_client.exceptions import BadRequestError, LoginRequiredError, UnauthorizedError
 from PIL import Image, ImageOps, UnidentifiedImageError
 
+from feeds import canonical_story_key
+from netsafe import _connect_public_socket, _public_url_opener, _validate_public_http_url
+
 # Error names Bluesky uses when it is telling us the login itself is no good.
 _SESSION_ERROR_NAMES = {"ExpiredToken", "InvalidToken", "AuthenticationRequired"}
 
@@ -22,7 +28,10 @@ USER_AGENT = "BskyNewsFeedBot/0.1 (+local RSS reader)"
 ARTICLE_FETCH_TIMEOUT = 10
 MAX_HTML_BYTES = 1_500_000
 MAX_THUMB_DOWNLOAD_BYTES = 8_000_000
+MAX_THUMB_PIXELS = 40_000_000
 BLUESKY_IMAGE_CAP = 1_900_000  # keep just under Bluesky's current 2 MB image cap
+_TID_ALPHABET = "234567abcdefghijklmnopqrstuvwxyz"
+_TID_PATTERN = re.compile(r"^[234567][234567abcdefghijklmnopqrstuvwxyz]{12}$")
 
 
 def _link_display_text(article_url: str) -> str:
@@ -34,6 +43,37 @@ def _link_display_text(article_url: str) -> str:
     if host.startswith("www."):
         host = host[4:]
     return host or article_url  # fall back to the full url if it somehow has no host
+
+
+def attribution_line(source_name: str, credit: str | None = None) -> str:
+    source_name = source_name.strip()
+    credit = (credit or "").strip()
+    if credit and credit.casefold() != source_name.casefold():
+        return f"Source: {source_name}, with {credit}"
+    return f"Source: {source_name}"
+
+
+def _record_key(article_url: str, first_seen_at: str | None = None) -> str:
+    """Build a stable, valid TID from the story's first-seen time and canonical URL."""
+    try:
+        value = first_seen_at or "1970-01-01T00:00:00+00:00"
+        if value.endswith("Z"):
+            value = value[:-1] + "+00:00"
+        timestamp = datetime.fromisoformat(value)
+        if timestamp.tzinfo is None:
+            timestamp = timestamp.replace(tzinfo=timezone.utc)
+        timestamp_us = int(timestamp.timestamp() * 1_000_000)
+    except (AttributeError, OverflowError, OSError, TypeError, ValueError):
+        timestamp_us = int(datetime.now(timezone.utc).timestamp() * 1_000_000)
+    clock_id = int.from_bytes(
+        hashlib.sha256(canonical_story_key(article_url).encode("utf-8")).digest()[:2],
+        "big",
+    ) & 0x3FF
+    value = (timestamp_us << 10) | clock_id
+    encoded = "".join(
+        _TID_ALPHABET[(value >> shift) & 31] for shift in range(0, 65, 5)
+    )[::-1]
+    return encoded[-13:]
 
 
 class _OpenGraphParser(HTMLParser):
@@ -94,10 +134,11 @@ def _fetch_article_preview(article_url: str) -> tuple[str | None, str | None, by
     doesn't get posted, only the reason it posts with the source's logo instead.
     """
     try:
+        _validate_public_http_url(article_url)
         request = urllib.request.Request(
             article_url, headers={"User-Agent": USER_AGENT, "Accept": "text/html,*/*;q=0.8"}
         )
-        with urllib.request.urlopen(request, timeout=ARTICLE_FETCH_TIMEOUT) as response:
+        with _public_url_opener().open(request, timeout=ARTICLE_FETCH_TIMEOUT) as response:
             content_type = response.headers.get("Content-Type", "")
             if "html" not in content_type.lower() and content_type:
                 return None, None, None
@@ -125,8 +166,9 @@ def _fetch_article_preview(article_url: str) -> tuple[str | None, str | None, by
     if parser.og_image:
         try:
             image_url = urljoin(final_url, parser.og_image)
+            _validate_public_http_url(image_url)
             img_request = urllib.request.Request(image_url, headers={"User-Agent": USER_AGENT})
-            with urllib.request.urlopen(img_request, timeout=ARTICLE_FETCH_TIMEOUT) as img_response:
+            with _public_url_opener().open(img_request, timeout=ARTICLE_FETCH_TIMEOUT) as img_response:
                 img_content_type = img_response.headers.get("Content-Type", "")
                 if "image" in img_content_type.lower() or not img_content_type:
                     downloaded = img_response.read(MAX_THUMB_DOWNLOAD_BYTES + 1)
@@ -146,8 +188,10 @@ def _compress_for_bluesky(raw: bytes) -> bytes | None:
     """
     try:
         with Image.open(io.BytesIO(raw)) as opened:
+            if opened.width * opened.height > MAX_THUMB_PIXELS:
+                return None
             image = ImageOps.exif_transpose(opened).copy()
-    except (UnidentifiedImageError, OSError):
+    except (Image.DecompressionBombError, UnidentifiedImageError, OSError):
         return None
 
     image.thumbnail((1600, 1600), Image.Resampling.LANCZOS)
@@ -228,15 +272,17 @@ class BlueskyPublisher:
         article_url: str,
         logo_path: Path | None,
         logo_alt: str,
+        credit: str | None = None,
+        first_seen_at: str | None = None,
     ) -> str:
-        lead = f"{headline}\n\n(Source: {source_name})\n\n"
+        lead = f"{headline}\n\n({attribution_line(source_name, credit)})\n\n"
         link_text = _link_display_text(article_url)
         if len(lead) + len(link_text) > 300:
             raise ValueError(
                 "The full headline, source line, and link exceed Bluesky's post-length limit. "
                 "This story was left unposted rather than shortening the headline."
             )
-        text = client_utils.TextBuilder().text(lead).link(link_text, article_url)
+        builder = client_utils.TextBuilder().text(lead).link(link_text, article_url)
 
         # Try the article's own preview image first; fall back to the source's logo;
         # fall back again to a text-only card if even that isn't available. Nothing
@@ -254,17 +300,42 @@ class BlueskyPublisher:
         embed_description = (og_description or f"via {source_name}").strip()[:1000]
 
         client = self._get_client()
-        try:
-            external = models.AppBskyEmbedExternal.External(
-                uri=article_url,
-                title=embed_title,
-                description=embed_description,
+        now = (
+            client.get_current_time_iso()
+            if hasattr(client, "get_current_time_iso")
+            else datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace(
+                "+00:00", "Z"
             )
+        )
+        repo = getattr(getattr(client, "me", None), "did", self.handle)
+        external = models.AppBskyEmbedExternal.External(
+            uri=article_url,
+            title=embed_title,
+            description=embed_description,
+        )
+        try:
             if thumb_bytes is not None:
                 upload = client.upload_blob(thumb_bytes)
                 external.thumb = upload.blob
-            embed = models.AppBskyEmbedExternal.Main(external=external)
-            result = client.send_post(text=text, embed=embed, profile_identify=self.handle)
+        except Exception as exc:
+            if _is_session_error(exc):
+                self._forget_client()
+            raise
+        embed = models.AppBskyEmbedExternal.Main(external=external)
+        record = models.AppBskyFeedPost.Record(
+            text=builder.build_text(),
+            created_at=now,
+            facets=builder.build_facets(),
+            embed=embed,
+        )
+        data = models.ComAtprotoRepoCreateRecord.Data(
+            repo=repo,
+            collection="app.bsky.feed.post",
+            rkey=_record_key(article_url, first_seen_at or now),
+            record=record,
+        )
+        try:
+            result = client.com.atproto.repo.create_record(data)
         except Exception as exc:
             # If Bluesky rejected the login itself (e.g. a session that could no longer
             # refresh), drop the cached login so the next attempt signs in fresh instead
@@ -272,5 +343,33 @@ class BlueskyPublisher:
             # limits) keep the login and just go through the normal retry schedule.
             if _is_session_error(exc):
                 self._forget_client()
-            raise
+                raise
+            try:
+                params = models.ComAtprotoRepoGetRecord.Params(
+                    repo=repo,
+                    collection="app.bsky.feed.post",
+                    rkey=data.rkey,
+                )
+                existing = client.com.atproto.repo.get_record(params)
+            except Exception:
+                raise exc
+            value = getattr(existing, "value", None)
+            record_embed = (
+                value.get("embed") if isinstance(value, dict) else getattr(value, "embed", None)
+            )
+            existing_external = (
+                record_embed.get("external")
+                if isinstance(record_embed, dict)
+                else getattr(record_embed, "external", None)
+            )
+            existing_url = (
+                existing_external.get("uri")
+                if isinstance(existing_external, dict)
+                else getattr(existing_external, "uri", None)
+            )
+            if not existing_url:
+                raise exc
+            if canonical_story_key(existing_url) != canonical_story_key(article_url):
+                raise RuntimeError("Existing Bluesky record uses a different article URL.") from exc
+            return str(existing.uri)
         return str(result.uri)

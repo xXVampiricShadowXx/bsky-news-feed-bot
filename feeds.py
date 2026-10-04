@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import calendar
+import gzip
 import html
 import re
 import urllib.error
@@ -10,6 +11,7 @@ import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from io import BytesIO
 
 import feedparser
 
@@ -57,6 +59,58 @@ def _published(entry) -> str | None:
         return None
 
 
+def _byline(entry) -> str:
+    authors = entry.get("authors") or []
+    if authors:
+        names = [author.get("name", "").strip() for author in authors if author.get("name")]
+        if names:
+            return ", ".join(names)
+    return str(entry.get("author") or entry.get("dc_creator") or "").strip()
+
+
+_WIRE_CREDITS = (
+    (re.compile(r"\bAustralian\s+Associated\s+Press\b", re.I), "AAP"),
+    (re.compile(r"\bThe\s+Canadian\s+Press\b", re.I), "The Canadian Press"),
+    (re.compile(r"\bAssociated\s+Press\b", re.I), "Associated Press"),
+    (re.compile(r"\bReuters\b", re.I), "Reuters"),
+    (re.compile(r"\bAFP\b", re.I), "AFP"),
+    (re.compile(r"\bAP\b", re.I), "Associated Press"),
+)
+
+
+def wire_credit(byline: str | None) -> str | None:
+    """Return the recognized wire agencies in a feed byline, if any."""
+    if not byline:
+        return None
+    matches = []
+    for pattern, name in _WIRE_CREDITS:
+        matches.extend((match.start(), match.end(), name) for match in pattern.finditer(byline))
+    matches.sort(key=lambda match: (match[0], -(match[1] - match[0])))
+    selected = []
+    for match in matches:
+        if any(match[0] >= start and match[1] <= end for start, end, _ in selected):
+            continue
+        selected.append(match)
+    credits = list(dict.fromkeys(name for _, _, name in sorted(selected)))
+    if not credits:
+        return None
+    return " and ".join(credits)
+
+
+def is_sport(entry: dict, url: str) -> bool:
+    """Identify sports coverage from an exact feed category or URL path segment."""
+    for tag in entry.get("tags", []):
+        term = str(tag.get("term", "")).strip().casefold()
+        if term in {"sport", "sports"}:
+            return True
+    segments = {
+        segment.casefold()
+        for segment in urllib.parse.urlsplit(url).path.split("/")
+        if segment
+    }
+    return bool(segments & {"sport", "sports", "football"})
+
+
 def _article_url(link: str, base_url: str) -> str:
     if not link or not link.strip():
         return ""
@@ -90,6 +144,7 @@ def canonical_story_key(url: str) -> str:
     hostname = parsed.hostname.lower()
     if hostname.startswith("www."):
         hostname = hostname[4:]
+    site = hostname
     if ":" in hostname and not hostname.startswith("["):
         hostname = f"[{hostname}]"
     try:
@@ -103,7 +158,24 @@ def canonical_story_key(url: str) -> str:
     path = parsed.path or "/"
     if path != "/":
         path = path.rstrip("/") or "/"
+    query = parsed.query
+    if site == "dw.com" or site.endswith(".dw.com"):
+        match = re.search(r"/(a-\d+)(?:/|$)", path, re.I)
+        if match:
+            path, query = f"/{match.group(1).lower()}", ""
+    elif site == "abc.net.au" or site.endswith(".abc.net.au"):
+        match = re.search(r"/news/(?:.*?/)?(\d{8,})(?:/|$)", path, re.I)
+        if match:
+            path, query = f"/news/{match.group(1)}", ""
+    elif site == "rte.ie" or site.endswith(".rte.ie"):
+        match = re.search(r"/(\d+)-[^/]+$", path)
+        if match:
+            path = f"{path[:match.start()]}/{match.group(1)}"
     query_pairs = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+    if not query:
+        query_pairs = []
+    else:
+        query_pairs = urllib.parse.parse_qsl(query, keep_blank_values=True)
     query_pairs = [
         (key, value)
         for key, value in query_pairs
@@ -149,6 +221,15 @@ def fetch_snapshot(
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         raise ValueError(f"Could not fetch feed: {exc}") from exc
 
+    if raw.startswith(b"\x1f\x8b"):
+        try:
+            with gzip.GzipFile(fileobj=BytesIO(raw)) as compressed:
+                raw = compressed.read(4_000_001)
+        except (EOFError, OSError) as exc:
+            raise ValueError("Feed could not be decompressed.") from exc
+        if len(raw) > 4_000_000:
+            raise ValueError("Feed is larger than 4 MB; refusing to load it.")
+
     parsed = feedparser.parse(raw)
     if parsed.bozo and not parsed.entries:
         detail = str(parsed.bozo_exception or "invalid XML")
@@ -175,6 +256,7 @@ def fetch_snapshot(
                 "headline": headline[:1000],
                 "url": article_link,
                 "published_at": _published(entry),
+                "credit": wire_credit(_byline(entry)),
                 "_order": index,
             }
         )
