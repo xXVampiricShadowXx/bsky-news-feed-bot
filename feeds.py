@@ -13,6 +13,8 @@ from datetime import datetime, timezone
 
 import feedparser
 
+from netsafe import _public_url_opener
+
 
 USER_AGENT = "BskyNewsFeedBot/0.1 (+local RSS reader)"
 TIMEOUT_SECONDS = 25
@@ -133,7 +135,7 @@ def fetch_snapshot(
     request = urllib.request.Request(url, headers=headers)
 
     try:
-        with urllib.request.urlopen(request, timeout=TIMEOUT_SECONDS) as response:
+        with _public_url_opener().open(request, timeout=TIMEOUT_SECONDS) as response:
             raw = response.read(4_000_001)
             if len(raw) > 4_000_000:
                 raise ValueError("Feed is larger than 4 MB; refusing to load it.")
