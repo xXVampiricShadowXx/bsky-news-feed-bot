@@ -41,7 +41,9 @@ def attribution_line(source_name: str, credit: str | None = None) -> str:
 
 def _record_key(article_url: str, first_seen_at: str | None = None) -> str:
     """Stable, valid TID so retrying a lost response cannot create another post."""
-    digest = int.from_bytes(hashlib.sha256(canonical_story_key(article_url).encode()).digest()[:8])
+    digest = int.from_bytes(
+        hashlib.sha256(canonical_story_key(article_url).encode()).digest()[:8], "big"
+    )
     value = digest & ((1 << 63) - 1)
     if first_seen_at:
         try:
