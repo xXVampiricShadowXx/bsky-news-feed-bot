@@ -53,7 +53,7 @@ jobs:
             sleep 2
           done
           curl -fsS http://127.0.0.1:5000/health
-          curl -fsS http://127.0.0.1:5000/ | grep -q "Add starter sources"
+          curl -fsS http://127.0.0.1:5000/ | grep -q "Connect the account"
           docker stop -t 15 bot
           test "$(docker inspect -f '{{.State.ExitCode}}' bot)" = "0"
       - name: Password protects the dashboard

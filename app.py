@@ -6,6 +6,7 @@ import hmac
 import io
 import os
 import secrets
+import signal
 import subprocess
 import sys
 import uuid
@@ -15,6 +16,7 @@ from urllib.parse import urlsplit
 from dotenv import load_dotenv
 from flask import (
     Flask,
+    Response,
     abort,
     flash,
     redirect,
@@ -34,6 +36,15 @@ from worker import BotWorker
 
 BASE_DIR = Path(__file__).resolve().parent
 load_dotenv(BASE_DIR / ".env")
+APP_HOST = os.getenv("APP_HOST", "127.0.0.1")
+DASHBOARD_PASSWORD = os.getenv("DASHBOARD_PASSWORD", "")
+if (
+    APP_HOST not in {"127.0.0.1", "::1", "localhost"}
+    and not DASHBOARD_PASSWORD
+    and os.getenv("ALLOW_OPEN_DASHBOARD") != "1"
+):
+    print("Set DASHBOARD_PASSWORD before listening on the network.", file=sys.stderr)
+    sys.exit(2)
 db.init_db()
 
 
@@ -109,6 +120,26 @@ def csrf_value() -> str:
 
 
 @app.before_request
+def protect_dashboard():
+    if request.endpoint == "health" or not DASHBOARD_PASSWORD:
+        return None
+    auth = request.authorization
+    if (
+        auth
+        and auth.type == "basic"
+        and auth.password is not None
+        and hmac.compare_digest(
+            auth.password.encode("utf-8"), DASHBOARD_PASSWORD.encode("utf-8")
+        )
+    ):
+        return None
+    return Response(
+        "Dashboard password required.", 401,
+        {"WWW-Authenticate": 'Basic realm="Dashboard"'},
+    )
+
+
+@app.before_request
 def protect_local_forms() -> None:
     if request.method == "POST":
         expected = session.get("csrf_token", "")
@@ -166,6 +197,12 @@ def _store_logo(file_storage, source_name: str) -> tuple[str, str]:
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_bytes(output.getvalue())
     return filename, f"{source_name} logo"
+
+
+@app.get("/health")
+def health():
+    state = worker.health()
+    return state, 200 if state["ok"] else 503
 
 
 @app.get("/")
@@ -345,7 +382,8 @@ def too_large(_error):
 
 if __name__ == "__main__":
     port = int(os.getenv("APP_PORT", "5000"))
-    host = "127.0.0.1"
+    host = APP_HOST
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     print(f"Bsky News Feed Bot dashboard: http://{host}:{port}")
     print("Keep this window open while the bot is running.")
     app.run(host=host, port=port, debug=False, use_reloader=False, threaded=True)
