@@ -200,7 +200,14 @@ class PostingTests(unittest.TestCase):
     def test_credit_is_counted_in_length_limit_before_posting(self):
         with patch.object(self.poster, "_get_client") as client:
             with self.assertRaisesRegex(ValueError, "post-length limit"):
-                self.post(credit="R" * 300)
+                self.poster.post_story(
+                    headline="News",
+                    source_name="Example",
+                    article_url=self.article,
+                    logo_path=None,
+                    logo_alt="Example logo",
+                    credit="R" * 300,
+                )
         client.assert_not_called()
 
     def test_lost_response_recovers_existing_post(self):
