@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 import feedparser
 
 from netsafe import _public_url_opener
+from topics import assess
 
 
 USER_AGENT = "BskyNewsFeedBot/0.1 (+local RSS reader)"
@@ -50,29 +51,6 @@ def _clean_text(value: str | None) -> str:
     return re.sub(r"\s+", " ", value).strip()
 
 
-def _byline(entry) -> str:
-    return _clean_text(entry.get("author") or entry.get("dc_creator") or "")
-
-
-def wire_credit(byline: str) -> str | None:
-    byline = re.sub(r"\bAustralian Associated Press\b", "AAP", byline, flags=re.I)
-    agencies = [
-        ("Associated Press", r"\b(?:Associated Press|AP)\b"),
-        ("Reuters", r"\bReuters\b"),
-        ("AFP", r"\b(?:AFP|Agence France-Presse)\b"),
-        ("AAP", r"\bAAP\b"),
-        ("The Canadian Press", r"\b(?:The )?Canadian Press\b"),
-    ]
-    credits = [name for name, pattern in agencies if re.search(pattern, byline, re.I)]
-    return " and ".join(credits) or None
-
-
-def is_sport(entry, article_url: str) -> bool:
-    categories = [_clean_text(tag.get("term", "")).lower() for tag in entry.get("tags", [])]
-    path_parts = urllib.parse.urlsplit(article_url).path.lower().split("/")
-    return any(category in {"sport", "sports"} for category in categories + path_parts)
-
-
 def _published(entry) -> str | None:
     parsed = entry.get("published_parsed") or entry.get("updated_parsed")
     if not parsed:
@@ -82,6 +60,34 @@ def _published(entry) -> str | None:
         return datetime.fromtimestamp(stamp, tz=timezone.utc).isoformat(timespec="seconds")
     except (TypeError, ValueError, OverflowError):
         return None
+
+
+def _byline(entry) -> str:
+    authors = entry.get("authors") or []
+    names = [str(author.get("name", "")) for author in authors]
+    names = [name for name in names if name.strip()]
+    return _clean_text(" ; ".join(names) or entry.get("author") or entry.get("dc_creator"))
+
+
+def wire_credit(byline: str) -> str | None:
+    text = re.sub(r"\bAustralian Associated Press\b", "AAP", byline, flags=re.I)
+    agencies = [
+        ("Associated Press", r"\b(?:Associated Press|AP)\b"),
+        ("Reuters", r"\bReuters\b"),
+        ("AFP", r"\b(?:AFP|Agence France[- ]Presse)\b"),
+        ("AAP", r"\bAAP\b"),
+        ("The Canadian Press", r"\b(?:The )?Canadian Press\b"),
+    ]
+    found = [name for name, pattern in agencies if re.search(pattern, text, re.I)]
+    return " and ".join(found) or None
+
+
+def is_sport(entry, article_url: str) -> bool:
+    categories = [tag.get("term", "") for tag in entry.get("tags", [])]
+    if any(re.search(r"\bsports?\b", category, re.IGNORECASE) for category in categories):
+        return True
+    path = urllib.parse.urlsplit(article_url).path
+    return bool(re.search(r"/sports?(?:/|$)", path, re.IGNORECASE))
 
 
 def _article_url(link: str, base_url: str) -> str:
@@ -151,6 +157,22 @@ def canonical_story_key(url: str) -> str:
     query_pairs.sort(key=lambda pair: (pair[0].casefold(), pair[1]))
     query = urllib.parse.urlencode(query_pairs, doseq=True)
 
+    story_id = None
+    if hostname == "dw.com":
+        story_id = re.search(r"/(a-\d+)$", path)
+        if story_id:
+            path = f"/{story_id[1]}"
+    elif hostname == "abc.net.au":
+        story_id = re.search(r"^/news/(?:[^/]+/)*(\d+)$", path)
+        if story_id:
+            path = f"/news/{story_id[1]}"
+    elif hostname == "rte.ie":
+        story_id = re.search(r"^/news/(?:[^/]+/)*(\d+)-[^/]+$", path)
+        if story_id:
+            path = f"/news/{story_id[1]}"
+    if story_id:
+        query = ""
+
     # Scheme, www, fragments, trailing slashes, query order, and common tracking
     # parameters do not make a distinct story for this bot's duplicate guard.
     return urllib.parse.urlunsplit(("https", hostname, path, query, ""))
@@ -193,6 +215,15 @@ def fetch_snapshot(
     except (urllib.error.URLError, TimeoutError, OSError, EOFError, zlib.error) as exc:
         raise ValueError(f"Could not fetch feed: {exc}") from exc
 
+    if raw.startswith(b"\x1f\x8b"):
+        try:
+            with gzip.GzipFile(fileobj=io.BytesIO(raw)) as compressed:
+                raw = compressed.read(MAX_FEED_BYTES + 1)
+        except (OSError, EOFError, zlib.error) as exc:
+            raise ValueError("Feed contains invalid gzip data.") from exc
+        if len(raw) > MAX_FEED_BYTES:
+            raise ValueError("Feed is larger than 4 MB; refusing to load it.")
+
     parsed = feedparser.parse(raw)
     if parsed.bozo and not parsed.entries:
         detail = str(parsed.bozo_exception or "invalid XML")
@@ -211,6 +242,12 @@ def fetch_snapshot(
         article_link = _article_url(raw_link, response_url)
         if not headline or not article_link or is_sport(entry, article_link):
             continue
+        geopolitical, _score, topic_reason = assess(
+            headline,
+            _clean_text(entry.get("summary")),
+            [tag.get("term", "") for tag in entry.get("tags", [])],
+            article_link,
+        )
         entries.append(
             {
                 # Use a normalized key for deduplication, but preserve the original
@@ -220,6 +257,8 @@ def fetch_snapshot(
                 "url": article_link,
                 "published_at": _published(entry),
                 "credit": wire_credit(_byline(entry)),
+                "geopolitical": geopolitical,
+                "topic_reason": topic_reason,
                 "_order": index,
             }
         )

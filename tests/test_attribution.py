@@ -45,6 +45,21 @@ class WireCreditTests(unittest.TestCase):
         )
         self.assertEqual(feeds.wire_credit(feeds._byline(parsed.entries[0])), "Associated Press")
 
+    def test_feed_entry_uses_all_authors(self):
+        entry = {
+            "author": "Jane Doe",
+            "authors": [{"name": "Jane Doe"}, {"name": "Reuters"}],
+        }
+        self.assertEqual(feeds._byline(entry), "Jane Doe ; Reuters")
+
+    def test_feed_entry_falls_back_to_singular_author_without_author_names(self):
+        entry = {"author": "Reuters", "authors": [{"name": ""}]}
+        self.assertEqual(feeds._byline(entry), "Reuters")
+
+    def test_multiple_authors_and_agencies_are_not_duplicated(self):
+        byline = feeds._byline({"authors": [{"name": "Reuters"}, {"name": "Reuters and AFP"}]})
+        self.assertEqual("Reuters and AFP", feeds.wire_credit(byline))
+
 
 class AttributionLineTests(unittest.TestCase):
     def test_publisher_only(self):
@@ -81,6 +96,16 @@ class StableStoryKeyTests(unittest.TestCase):
             feeds.canonical_story_key("https://www.bbc.co.uk/news/a/1"),
             feeds.canonical_story_key("https://www.bbc.co.uk/news/b/1"),
         )
+
+    def test_distinct_ids_and_unrelated_hosts_remain_distinct(self):
+        for a, b in [
+            ("https://dw.com/en/title/a-123", "https://dw.com/en/title/a-124"),
+            ("https://abc.net.au/news/title/123", "https://abc.net.au/news/title/124"),
+            ("https://rte.ie/news/123-title", "https://rte.ie/news/124-title"),
+            ("https://example.org/en/old/a-123", "https://example.org/en/new/a-123"),
+        ]:
+            with self.subTest(a=a, b=b):
+                self.assertNotEqual(feeds.canonical_story_key(a), feeds.canonical_story_key(b))
 
 
 if __name__ == "__main__":
