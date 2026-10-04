@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import calendar
+import gzip
 import html
+import io
 import re
 import urllib.error
 import urllib.parse
@@ -18,6 +20,7 @@ from netsafe import _public_url_opener
 
 USER_AGENT = "BskyNewsFeedBot/0.1 (+local RSS reader)"
 TIMEOUT_SECONDS = 25
+MAX_FEED_BYTES = 4_000_000
 
 
 @dataclass
@@ -44,6 +47,29 @@ def _clean_text(value: str | None) -> str:
     value = re.sub(r"<[^>]*>", " ", value)
     value = html.unescape(value)
     return re.sub(r"\s+", " ", value).strip()
+
+
+def _byline(entry) -> str:
+    return _clean_text(entry.get("author") or entry.get("dc_creator") or "")
+
+
+def wire_credit(byline: str) -> str | None:
+    byline = re.sub(r"\bAustralian Associated Press\b", "AAP", byline, flags=re.I)
+    agencies = [
+        ("Associated Press", r"\b(?:Associated Press|AP)\b"),
+        ("Reuters", r"\bReuters\b"),
+        ("AFP", r"\b(?:AFP|Agence France-Presse)\b"),
+        ("AAP", r"\bAAP\b"),
+        ("The Canadian Press", r"\b(?:The )?Canadian Press\b"),
+    ]
+    credits = [name for name, pattern in agencies if re.search(pattern, byline, re.I)]
+    return " and ".join(credits) or None
+
+
+def is_sport(entry, article_url: str) -> bool:
+    categories = [_clean_text(tag.get("term", "")).lower() for tag in entry.get("tags", [])]
+    path_parts = urllib.parse.urlsplit(article_url).path.lower().split("/")
+    return any(category in {"sport", "sports"} for category in categories + path_parts)
 
 
 def _published(entry) -> str | None:
@@ -103,11 +129,23 @@ def canonical_story_key(url: str) -> str:
     path = parsed.path or "/"
     if path != "/":
         path = path.rstrip("/") or "/"
+    # These publishers retain an article ID when the headline/URL slug changes.
+    if hostname == "dw.com":
+        match = re.search(r"/(a-\d+)$", path)
+        if match:
+            path = f"/{match[1]}"
+    elif hostname == "abc.net.au":
+        match = re.fullmatch(r"/news/\d{4}-\d{2}-\d{2}/[^/]+/(\d+)", path)
+        if match:
+            path = f"/news/{match[1]}"
+    elif hostname == "rte.ie":
+        path = re.sub(r"(/news/.*/\d{4}/\d{4}/\d+)-[^/]+$", r"\1", path)
     query_pairs = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
     query_pairs = [
         (key, value)
         for key, value in query_pairs
         if not key.lower().startswith("utm_") and key.lower() not in _TRACKING_QUERY_KEYS
+        and not (hostname == "dw.com" and key.lower() == "maca")
     ]
     query_pairs.sort(key=lambda pair: (pair[0].casefold(), pair[1]))
     query = urllib.parse.urlencode(query_pairs, doseq=True)
@@ -136,9 +174,14 @@ def fetch_snapshot(
 
     try:
         with _public_url_opener().open(request, timeout=TIMEOUT_SECONDS) as response:
-            raw = response.read(4_000_001)
-            if len(raw) > 4_000_000:
+            raw = response.read(MAX_FEED_BYTES + 1)
+            if len(raw) > MAX_FEED_BYTES:
                 raise ValueError("Feed is larger than 4 MB; refusing to load it.")
+            if raw.startswith(b"\x1f\x8b"):
+                with gzip.GzipFile(fileobj=io.BytesIO(raw)) as compressed:
+                    raw = compressed.read(MAX_FEED_BYTES + 1)
+                if len(raw) > MAX_FEED_BYTES:
+                    raise ValueError("Feed is larger than 4 MB; refusing to load it.")
             response_url = response.geturl()
             response_etag = response.headers.get("ETag") or etag
             response_modified = response.headers.get("Last-Modified") or last_modified
@@ -146,7 +189,7 @@ def fetch_snapshot(
         if exc.code == 304:
             return FeedSnapshot("", "", [], etag, last_modified, not_modified=True)
         raise ValueError(f"Feed server returned HTTP {exc.code}.") from exc
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+    except (urllib.error.URLError, TimeoutError, OSError, EOFError) as exc:
         raise ValueError(f"Could not fetch feed: {exc}") from exc
 
     parsed = feedparser.parse(raw)
@@ -165,7 +208,7 @@ def fetch_snapshot(
             if str(possible_id).startswith(("http://", "https://")):
                 raw_link = str(possible_id)
         article_link = _article_url(raw_link, response_url)
-        if not headline or not article_link:
+        if not headline or not article_link or is_sport(entry, article_link):
             continue
         entries.append(
             {
@@ -175,6 +218,7 @@ def fetch_snapshot(
                 "headline": headline[:1000],
                 "url": article_link,
                 "published_at": _published(entry),
+                "credit": wire_credit(_byline(entry)),
                 "_order": index,
             }
         )

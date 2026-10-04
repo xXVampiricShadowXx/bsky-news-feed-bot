@@ -27,6 +27,38 @@ class FakeResponse(io.BytesIO):
 
 
 class FetchTests(unittest.TestCase):
+    def test_plain_feed_extracts_credit_and_skips_sport(self):
+        rss = b"""<rss version="2.0"><channel><title>News</title>
+        <item><title>World news</title><link>https://example.com/world</link>
+        <author>Jane Doe, Reuters</author></item>
+        <item><title>Sport news</title><link>https://example.com/sport/1</link></item>
+        <item><title>More sport</title><link>https://example.com/other</link>
+        <category>Sports</category></item></channel></rss>"""
+        opener = MagicMock()
+        opener.open.return_value = FakeResponse(rss)
+        with patch.object(feeds, "_public_url_opener", return_value=opener):
+            snapshot = feeds.fetch_snapshot("https://example.com/rss")
+        self.assertEqual(["World news"], [entry["headline"] for entry in snapshot.entries])
+        self.assertEqual("Reuters", snapshot.entries[0]["credit"])
+        self.assertEqual("https://example.com/world", snapshot.entries[0]["url"])
+
+    def test_compressed_feed_cannot_bypass_size_limit(self):
+        opener = MagicMock()
+        opener.open.return_value = FakeResponse(gzip.compress(RSS))
+        with patch.object(feeds, "_public_url_opener", return_value=opener), \
+             patch.object(feeds, "MAX_FEED_BYTES", 256):
+            with self.assertRaisesRegex(ValueError, "larger than 4 MB"):
+                feeds.fetch_snapshot("https://example.com/rss")
+
+    def test_invalid_gzip_is_reported_as_fetch_error(self):
+        for body in (b"\x1f\x8bnot gzip", gzip.compress(RSS)[:-5]):
+            with self.subTest(body=body):
+                opener = MagicMock()
+                opener.open.return_value = FakeResponse(body)
+                with patch.object(feeds, "_public_url_opener", return_value=opener):
+                    with self.assertRaisesRegex(ValueError, "Could not fetch feed"):
+                        feeds.fetch_snapshot("https://example.com/rss")
+
     def test_gzip_body_without_content_encoding_header_is_decoded(self):
         opener = MagicMock()
         opener.open.return_value = FakeResponse(gzip.compress(RSS))
