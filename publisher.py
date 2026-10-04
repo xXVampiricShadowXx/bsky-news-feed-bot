@@ -196,12 +196,12 @@ def _compress_for_bluesky(raw: bytes) -> bytes | None:
     """
     try:
         with Image.open(io.BytesIO(raw)) as opened:
+            if opened.width * opened.height > MAX_THUMB_PIXELS:
+                return None
             image = ImageOps.exif_transpose(opened).copy()
     except (Image.DecompressionBombError, UnidentifiedImageError, OSError):
         return None
 
-    if image.width * image.height > MAX_THUMB_PIXELS:
-        return None
     image.thumbnail((1600, 1600), Image.Resampling.LANCZOS)
     image = image.convert("RGBA") if "A" in image.getbands() else image.convert("RGB")
 
@@ -280,9 +280,10 @@ class BlueskyPublisher:
         article_url: str,
         logo_path: Path | None,
         logo_alt: str,
-        wire_credit: str | None = None,
+        credit: str | None = None,
+        first_seen_at: str | None = None,
     ) -> str:
-        lead = f"{headline}\n\n({attribution_line(source_name, wire_credit)})\n\n"
+        lead = f"{headline}\n\n({attribution_line(source_name, credit)})\n\n"
         link_text = _link_display_text(article_url)
         if len(lead) + len(link_text) > 300:
             raise ValueError(
@@ -307,7 +308,7 @@ class BlueskyPublisher:
         embed_description = (og_description or f"via {source_name}").strip()[:1000]
 
         client = self._get_client()
-        record_key = _record_key(article_url)
+        record_key = _record_key(article_url, first_seen_at)
         try:
             external = models.AppBskyEmbedExternal.External(
                 uri=article_url,

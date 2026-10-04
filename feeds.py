@@ -5,6 +5,7 @@ from __future__ import annotations
 import calendar
 import gzip
 import html
+import io
 import re
 import urllib.error
 import urllib.parse
@@ -218,7 +219,10 @@ def fetch_snapshot(
 
     if raw.startswith(b"\x1f\x8b"):
         try:
-            raw = gzip.decompress(raw)
+            with gzip.GzipFile(fileobj=io.BytesIO(raw)) as compressed:
+                raw = compressed.read(4_000_001)
+            if len(raw) > 4_000_000:
+                raise ValueError("Feed is larger than 4 MB; refusing to load it.")
         except (EOFError, OSError):
             pass
 
@@ -248,6 +252,7 @@ def fetch_snapshot(
                 "headline": headline[:1000],
                 "url": article_link,
                 "published_at": _published(entry),
+                "credit": wire_credit(_byline(entry)),
                 "_order": index,
             }
         )

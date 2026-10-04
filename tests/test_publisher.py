@@ -1,7 +1,7 @@
 import io
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from PIL import Image
 
@@ -36,6 +36,17 @@ class PreviewTests(unittest.TestCase):
         with Image.open(io.BytesIO(compressed)) as opened:
             self.assertEqual("WEBP", opened.format)
 
+    def test_oversized_image_is_rejected_before_transposing(self):
+        opened = MagicMock()
+        opened.__enter__.return_value = opened
+        opened.width = 11
+        opened.height = 10
+        with patch.object(publisher.Image, "open", return_value=opened), \
+             patch.object(publisher.ImageOps, "exif_transpose") as transpose, \
+             patch.object(publisher, "MAX_THUMB_PIXELS", 100):
+            self.assertIsNone(publisher._compress_for_bluesky(b"image"))
+        transpose.assert_not_called()
+
     def test_pillow_decompression_bomb_degrades_gracefully(self):
         with patch.object(
             publisher.Image, "open", side_effect=Image.DecompressionBombError("too large")
@@ -59,12 +70,13 @@ class PostingTests(unittest.TestCase):
             ),
         )
 
-    def post(self):
+    def post(self, **kwargs):
         with patch.object(self.poster, "_get_client", return_value=self.client), \
              patch.object(publisher, "_fetch_article_preview", return_value=(None, None, None)):
             return self.poster.post_story(
                 headline="News", source_name="Example", article_url=self.article,
                 logo_path=None, logo_alt="Example logo",
+                **kwargs,
             )
 
     def test_stable_record_key_and_rich_link(self):
@@ -94,6 +106,16 @@ class PostingTests(unittest.TestCase):
         except ImportError:
             return
         validate_tid(key, None)
+
+    def test_persisted_credit_and_first_seen_at_are_used(self):
+        submitted = []
+        self.client.com.atproto.repo.create_record = lambda data: (
+            submitted.append(data) or SimpleNamespace(uri="at://did:plc:bot/app.bsky.feed.post/key")
+        )
+        first_seen_at = "2026-10-02T03:43:29+00:00"
+        self.post(credit="Associated Press", first_seen_at=first_seen_at)
+        self.assertEqual(submitted[0].rkey, publisher._record_key(self.article, first_seen_at))
+        self.assertIn("Source: Example, with Associated Press", submitted[0].record.text)
 
     def test_lost_response_recovers_existing_post(self):
         self.client.com.atproto.repo.create_record = lambda data: (_ for _ in ()).throw(
