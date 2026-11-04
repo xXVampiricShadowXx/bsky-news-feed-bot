@@ -18,10 +18,34 @@ jobs:
       pull-requests: write
 
     steps:
+    - uses: actions/github-script@v8
+      with:
+        script: |
+          const labels = [
+            { name: 'no-issue-activity', description: 'Issue has had no activity for 60 days.' },
+            { name: 'no-pr-activity', description: 'Pull request has had no activity for 60 days.' }
+          ];
+          const existingLabels = await github.paginate(
+            github.rest.issues.listLabelsForRepo,
+            { ...context.repo, per_page: 100 }
+          );
+          const existingNames = new Set(existingLabels.map(label => label.name.toLowerCase()));
+
+          for (const label of labels) {
+            if (!existingNames.has(label.name.toLowerCase())) {
+              await github.rest.issues.createLabel({
+                ...context.repo,
+                ...label,
+                color: 'ededed'
+              });
+            }
+          }
     - uses: actions/stale@v11
       with:
         repo-token: ${{ secrets.GITHUB_TOKEN }}
-        stale-issue-message: 'This issue has been automatically marked stale due to inactivity. It will be closed if no further activity occurs.'
-        stale-pr-message: 'This pull request has been automatically marked stale due to inactivity. It will be closed if no further activity occurs.'
+        days-before-stale: 60
+        days-before-close: 7
+        stale-issue-message: 'This issue has been marked stale because it has had no activity for 60 days. It will close automatically in 7 days unless there is new activity.'
+        stale-pr-message: 'This pull request has been marked stale because it has had no activity for 60 days. It will close automatically in 7 days unless there is new activity.'
         stale-issue-label: 'no-issue-activity'
         stale-pr-label: 'no-pr-activity'
