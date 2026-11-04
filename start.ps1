@@ -5,13 +5,18 @@ $pythonExe = Join-Path $PSScriptRoot '.venv\Scripts\python.exe'
 if (-not (Test-Path -LiteralPath $pythonExe)) {
     $pyLauncher = Get-Command 'py' -ErrorAction SilentlyContinue
     if ($pyLauncher) {
-        & py -3 -m venv .venv
+        & py -3.11 -m venv .venv
     } else {
         & python -m venv .venv
     }
     if ($LASTEXITCODE -ne 0) {
-        throw 'Could not create the Python environment. Install Python 3.10 or newer, then run this file again.'
+        throw 'Could not create the Python environment. Install Python 3.11 or newer, then run this file again.'
     }
+}
+
+& $pythonExe -c "import sys; raise SystemExit(sys.version_info < (3, 11))"
+if ($LASTEXITCODE -ne 0) {
+    throw 'Python 3.11 or newer is required. Recreate .venv with a supported Python version, then run this file again.'
 }
 
 if (-not (Test-Path -LiteralPath '.env')) {

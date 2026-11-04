@@ -5,7 +5,11 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 if [ ! -x .venv/bin/python ]; then
-    python3 -m venv .venv || { echo "Install Python 3.10 or newer, then run this again."; exit 1; }
+    python3 -m venv .venv || { echo "Install Python 3.11 or newer, then run this again."; exit 1; }
+fi
+if ! .venv/bin/python -c 'import sys; raise SystemExit(sys.version_info < (3, 11))'; then
+    echo "Python 3.11 or newer is required. Recreate .venv with a supported Python version, then run this again." >&2
+    exit 1
 fi
 if [ ! -f .env ]; then
     cp .env.example .env
