@@ -178,7 +178,6 @@ class PreviewTests(unittest.TestCase):
             )
         self.assertEqual(1, opener.open.call_count)
 
-
 class RepostingTests(unittest.TestCase):
     def setUp(self):
         self.poster = publisher.BlueskyPublisher()
@@ -242,7 +241,6 @@ class RepostingTests(unittest.TestCase):
         self.assertEqual("at://did:plc:feed/app.bsky.feed.generator/test", params.feed)
         self.assertEqual("next", params.cursor)
         self.assertEqual(100, params.limit)
-
 
 class PostingTests(unittest.TestCase):
     def setUp(self):

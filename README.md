@@ -14,7 +14,7 @@ The post attaches the publisher's logo. Feed blurbs and article photos are ignor
 
 ## Start the dashboard
 
-1. Install Python 3.10 or newer.
+1. Install Python 3.11 or newer.
 2. In File Explorer, open this folder and run `start.ps1` in PowerShell. The first run creates a private Python environment, installs the dependencies, and creates `.env`.
 3. Create a Bluesky app password in **Settings → Privacy and Security → App Passwords**. Do not use your regular account password.
 4. Open `.env` in this folder and set `BLUESKY_APP_PASSWORD`. The handle is already set to `oninews.bsky.social`.
