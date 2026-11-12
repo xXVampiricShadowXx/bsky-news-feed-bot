@@ -18,9 +18,23 @@ class GeopoliticsFilterTests(unittest.TestCase):
         self.assertAccepted("At least seven killed in separate Israeli attacks in Gaza")
         self.assertAccepted("Ethiopia and Eritrea break diplomatic ties over conflict")
         self.assertAccepted("G20 trade ministers deadlocked over industrial overcapacity")
+        self.assertAccepted("NATO ministers meet over a dispute between France and Russia")
         self.assertAccepted("Who will be the UN's next secretary-general?")
         self.assertAccepted("U.S. and China agree trade truce")
+        self.assertAccepted("International sanctions are imposed on a regional regime")
         self.assertAccepted("Gen Z could shape Kenya's next election")
+
+    def test_accepts_current_international_security_and_crises(self):
+        self.assertAccepted("Cross-border drone strike kills civilians near the border")
+        self.assertAccepted("Earthquake triggers major international rescue response")
+        self.assertAccepted("Migrant boat disaster leaves dozens missing off Greece")
+        self.assertAccepted("Government opens national security investigation into state espionage")
+        self.assertAccepted(
+            "TechCo shares fall after government opens a security investigation into espionage"
+        )
+        self.assertAccepted(
+            "TechCo shares fall after government opens a national security investigation into its foreign ties"
+        )
 
     def test_rejects_domestic_and_soft_news(self):
         self.assertRejected("Primary school 'devastated' by suspected theft of kid goats")
@@ -29,6 +43,39 @@ class GeopoliticsFilterTests(unittest.TestCase):
         self.assertRejected("SpaceX launches crew to ISS")
         self.assertRejected("Commonwealth Bank boss says Reserve Bank rate hikes probably finished")
         self.assertRejected("Swiss glaciers suffer another year of record ice loss")
+        self.assertRejected("UK minister unveils housing plan")
+        self.assertRejected("Protesters march over local rent increases in France")
+        self.assertRejected("Australia's next election is dominated by local tax policy")
+        self.assertRejected("Albanese's campaign is focused on Australia's next election")
+        self.assertRejected("CEO faces questions over alleged China espionage as shares fall")
+        self.assertRejected("UK minister sued over local housing plan")
+        self.assertRejected("A century-old letter reveals a family's wartime history")
+
+    def test_summit_personal_appearance_is_not_geopolitical(self):
+        self.assertRejected("Activist delivers remarks on arrival at UN summit")
+        self.assertRejected("Singer attends G7 summit to promote a new album")
+        self.assertAccepted("Activist's remarks prompt G7 leaders to sign a new treaty")
+
+    def test_source_metadata_does_not_change_classification(self):
+        headline = "UK minister unveils housing plan"
+        plain = topics.assess(headline)
+        tagged = topics.assess(
+            headline,
+            tags=["international relations", "foreign affairs"],
+            url="https://example.com/world/politics",
+        )
+        self.assertEqual(plain[0], tagged[0])
+        self.assertFalse(tagged[0])
+
+        headline = "U.S. and China agree trade truce"
+        plain = topics.assess(headline)
+        tagged = topics.assess(
+            headline,
+            tags=["celebrity", "lifestyle"],
+            url="https://example.com/entertainment/story",
+        )
+        self.assertEqual(plain[0], tagged[0])
+        self.assertTrue(tagged[0])
 
     def test_off_topic_markers_veto_weak_matches(self):
         self.assertRejected("Kanye West's Russia concerts cancelled", tags=["Music"])

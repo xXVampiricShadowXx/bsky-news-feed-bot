@@ -4,9 +4,10 @@ import unittest
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import db
+import feeds
 import worker
 
 
@@ -57,6 +58,81 @@ class FeedStorageTests(unittest.TestCase):
         ))
         self.assertEqual("etag-2", db.get_feed(self.feed_id)["etag"])
         self.assertEqual(2, len(db.pending_items()))
+
+    def test_sport_entries_are_filtered_only_when_geopolitics_only_is_enabled(self):
+        body = b"""<rss version="2.0"><channel><title>Sports</title>
+        <link>https://example.com/</link><item><title>Local derby</title>
+        <link>https://example.com/news/sport/1</link><category>Sport</category>
+        </item></channel></rss>"""
+        response = MagicMock()
+        response.__enter__.return_value = response
+        response.read.return_value = body
+        response.geturl.return_value = "https://example.com/rss"
+        response.headers = {}
+        with patch.object(feeds, "_public_url_opener") as opener:
+            opener.return_value.open.return_value = response
+            snapshot = feeds.fetch_snapshot("https://example.com/rss")
+
+        db.set_setting("autopost_enabled", "1")
+        self.assertTrue(snapshot.entries[0]["sport"])
+        inserted = db.store_feed_items(
+            self.feed_id, snapshot.entries, "pending", etag=None, last_modified=None
+        )
+        self.assertEqual("filtered", inserted[0][1])
+        self.assertEqual([], db.pending_items())
+
+        db.set_setting("geopolitics_only", "0")
+        allowed = dict(
+            snapshot.entries[0],
+            key="https://example.com/news/sport/2",
+            url="https://example.com/news/sport/2",
+        )
+        inserted = db.store_feed_items(
+            self.feed_id, [allowed], "pending", etag=None, last_modified=None
+        )
+        self.assertEqual("pending", inserted[0][1])
+
+    def test_story_key_upgrade_rekeys_retained_seen_story_history(self):
+        old_dw_key = "https://dw.com/en/old-title/a-79462926"
+        old_abc_key = "https://abc.net.au/news/2026-10-02/old-title/107221348"
+        first_seen_at = "2026-09-30T09:00:00+00:00"
+        with db.connection() as conn:
+            conn.execute(
+                "INSERT INTO seen_stories(story_key, first_seen_at) VALUES(?, ?)",
+                (old_dw_key, first_seen_at),
+            )
+            conn.execute(
+                "INSERT INTO seen_stories(story_key, first_seen_at) VALUES(?, ?)",
+                (old_abc_key, first_seen_at),
+            )
+            conn.execute(
+                """INSERT INTO items
+                   (feed_id, item_key, headline, article_url, status, created_at)
+                   VALUES(?, ?, ?, ?, 'baseline', ?)""",
+                (
+                    self.feed_id,
+                    old_dw_key,
+                    "Old DW headline",
+                    old_dw_key,
+                    "2026-10-01T09:00:00+00:00",
+                ),
+            )
+            conn.execute(
+                "INSERT OR REPLACE INTO settings(key, value) VALUES('story_key_version', '3')"
+            )
+
+        db.init_db()
+
+        with db.connection() as conn:
+            stories = {
+                row["story_key"]: row["first_seen_at"]
+                for row in conn.execute("SELECT story_key, first_seen_at FROM seen_stories")
+            }
+        self.assertEqual(first_seen_at, stories["https://dw.com/a-79462926"])
+        self.assertEqual(first_seen_at, stories["https://abc.net.au/news/107221348"])
+        self.assertNotIn(old_dw_key, stories)
+        self.assertNotIn(old_abc_key, stories)
+        self.assertEqual(db.STORY_KEY_VERSION, db.setting("story_key_version"))
 
     def test_off_topic_stories_are_filtered_not_queued(self):
         db.set_setting("autopost_enabled", "1")
