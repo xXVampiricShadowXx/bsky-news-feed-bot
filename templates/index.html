@@ -78,6 +78,21 @@
             {% endif %}
           </form>
         </div>
+        <p class="tiny muted">
+          Repost posts from the AP World News custom feed, oldest first. Reposting is
+          independent of RSS auto-posting and runs every 15 minutes. Enabling reposting
+          or restarting the app marks current feed items as a baseline; only newer items
+          are reposted.
+        </p>
+        <form method="post" action="{{ url_for('toggle_reposting') }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+          {% if reposting_enabled %}
+            <button class="button button-danger" type="submit">Pause custom-feed reposting</button>
+          {% else %}
+            <button class="button button-secondary" type="submit">Start custom-feed reposting</button>
+          {% endif %}
+        </form>
+        <p class="tiny muted">Feed URI: <code class="repost-feed-uri">{{ repost_feed_uri }}</code></p>
       </article>
 
       <article class="panel format-card">

@@ -178,6 +178,69 @@ class PreviewTests(unittest.TestCase):
             )
         self.assertEqual(1, opener.open.call_count)
 
+class RepostingTests(unittest.TestCase):
+    def setUp(self):
+        self.poster = publisher.BlueskyPublisher()
+        self.client = SimpleNamespace(
+            me=SimpleNamespace(did="did:plc:account"),
+            get_current_time_iso=lambda: "2026-11-12T12:00:00Z",
+            com=SimpleNamespace(
+                atproto=SimpleNamespace(
+                    repo=SimpleNamespace(
+                        create_record=MagicMock(
+                            return_value=SimpleNamespace(
+                                uri="at://did:plc:account/app.bsky.feed.repost/key"
+                            )
+                        )
+                    )
+                )
+            )
+        )
+
+    def test_repost_creates_the_expected_record_in_the_authenticated_repo(self):
+        with patch.object(self.poster, "_get_client", return_value=self.client):
+            uri = self.poster.repost(
+                "at://did:plc:author/app.bsky.feed.post/post", "bafy-post", "did:plc:account"
+            )
+        self.assertEqual("at://did:plc:account/app.bsky.feed.repost/key", uri)
+        data = self.client.com.atproto.repo.create_record.call_args.args[0]
+        self.assertEqual("did:plc:account", data.repo)
+        self.assertEqual("app.bsky.feed.repost", data.collection)
+        self.assertEqual(
+            ("at://did:plc:author/app.bsky.feed.post/post", "bafy-post"),
+            (data.record.subject.uri, data.record.subject.cid),
+        )
+        self.assertEqual("2026-11-12T12:00:00Z", data.record.created_at)
+
+    def test_repost_refuses_a_mismatched_account_before_writing(self):
+        with patch.object(self.poster, "_get_client", return_value=self.client):
+            with self.assertRaisesRegex(RuntimeError, "restricted to did:plc:other"):
+                self.poster.repost(
+                    "at://did:plc:author/app.bsky.feed.post/post",
+                    "bafy-post",
+                    "did:plc:other",
+                )
+        self.client.com.atproto.repo.create_record.assert_not_called()
+
+    def test_custom_feed_reads_the_public_appview_with_cursor(self):
+        response = SimpleNamespace(feed=[])
+        client = SimpleNamespace(
+            app=SimpleNamespace(
+                bsky=SimpleNamespace(
+                    feed=SimpleNamespace(get_feed=MagicMock(return_value=response))
+                )
+            )
+        )
+        with patch.object(publisher, "Client", return_value=client) as client_factory:
+            result = self.poster.get_feed(
+                "at://did:plc:feed/app.bsky.feed.generator/test", "next"
+            )
+        self.assertIs(response, result)
+        client_factory.assert_called_once_with("https://public.api.bsky.app")
+        params = client.app.bsky.feed.get_feed.call_args.args[0]
+        self.assertEqual("at://did:plc:feed/app.bsky.feed.generator/test", params.feed)
+        self.assertEqual("next", params.cursor)
+        self.assertEqual(100, params.limit)
 
 class PostingTests(unittest.TestCase):
     def setUp(self):

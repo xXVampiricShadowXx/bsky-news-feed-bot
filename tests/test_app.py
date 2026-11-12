@@ -43,6 +43,51 @@ class DashboardTests(unittest.TestCase):
         response = module["app"].test_client().get("/")
         self.assertEqual(200, response.status_code)
         self.assertIn(b"Connect the account", response.data)
+        self.assertIn(b"Start custom-feed reposting", response.data)
+        self.assertIn(b"marks current feed items as a baseline", response.data)
+        self.assertEqual("0", db.setting("reposting_enabled"))
+
+    def test_reposting_toggle_validates_account_and_persists_opt_in(self):
+        module = self.load_app()
+        client = module["app"].test_client()
+        client.get("/")
+        with client.session_transaction() as session:
+            csrf_token = session["csrf_token"]
+
+        with patch.object(
+            module["worker"], "activate_custom_repost_feed", return_value=3
+        ) as baseline:
+            response = client.post(
+                "/settings/toggle-reposting", data={"csrf_token": csrf_token}
+            )
+        self.assertEqual(302, response.status_code)
+        baseline.assert_called_once_with()
+        self.assertEqual("1", db.setting("reposting_enabled"))
+
+        with client.session_transaction() as session:
+            csrf_token = session["csrf_token"]
+        response = client.post(
+            "/settings/toggle-reposting", data={"csrf_token": csrf_token}
+        )
+        self.assertEqual(302, response.status_code)
+        self.assertEqual("0", db.setting("reposting_enabled"))
+
+    def test_reposting_does_not_enable_when_baseline_fails(self):
+        module = self.load_app()
+        client = module["app"].test_client()
+        client.get("/")
+        with client.session_transaction() as session:
+            csrf_token = session["csrf_token"]
+        with patch.object(
+            module["worker"], "activate_custom_repost_feed",
+            side_effect=RuntimeError("AppView unavailable"),
+        ):
+            response = client.post(
+                "/settings/toggle-reposting", data={"csrf_token": csrf_token}
+            )
+        self.assertEqual(302, response.status_code)
+        self.assertEqual("0", db.setting("reposting_enabled"))
+        self.assertIn(b"AppView unavailable", client.get("/").data)
 
     def test_network_binding_requires_password_or_explicit_override(self):
         for host in ("0.0.0.0", "::", "192.0.2.1"):

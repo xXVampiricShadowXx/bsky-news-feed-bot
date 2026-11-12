@@ -1,18 +1,11 @@
-"""Keep the bot focused on geopolitics: international relations, conflict, and power.
+"""Classify geopolitical stories from article text, independent of source metadata.
 
-Scoring is deliberately transparent (keyword lists, no model) so a skipped or
-accepted story can always be explained. Strong signals are worth 2 points,
-supporting signals 1; a story needs THRESHOLD points from its headline,
-summary, and feed categories. Off-topic markers (sport, celebrity, weather,
-etc.) veto a story unless its geopolitical signal is overwhelming.
+The score is diagnostic only; acceptance requires a specific international subject signal.
 """
 
 from __future__ import annotations
 
 import re
-
-THRESHOLD = 3
-VETO_OVERRIDE = 6
 
 _STRONG = r"""
 war wars warfare ceasefire cease-fire truce armistice invasion invade invaded invades
@@ -93,33 +86,13 @@ weapons arms aid attack attacks killed casualties violence clashes unrest crisis
 international leaders
 """.split()
 
-_GEO_TAGS = [
-    "world politics", "unrest, conflict and war", "conflict", "war", "diplomacy",
-    "foreign affairs", "foreign policy", "geopolitics", "international relations", "terrorism",
-    "defence", "defense", "nuclear issues", "territorial disputes", "refugees", "human rights",
-    "elections", "tariffs", "sanctions", "peace and security", "migrants and refugees",
-]
-
-# Region tags say where a story happened, not that it is geopolitical.
-_REGION_TAGS = [
-    "international", "middle east", "europe", "africa", "asia", "americas", "asia pacific",
-    "ukraine", "russia", "israel", "gaza", "iran", "china", "trade",
-]
-
 _OFF_TOPIC = r"""
 sport sports football soccer rugby cricket tennis golf afl nrl nba nfl mlb nhl olympic
 olympics paralympics marathon premiership tournament championship celebrity celebrities
-actor actress singer rapper album film movie oscars grammys emmys netflix recipe recipes
+actor actress singer rapper album concert concerts tour touring film movie oscars grammys emmys netflix recipe recipes
 fashion horoscope lottery rainfall heatwave cyclone bushfire bushfires murder murdered
 stabbing burglary theft jury sentenced inquest coroner
 """.split()
-
-_OFF_TOPIC_TAGS = [
-    "sport", "sports", "entertainment", "arts and culture", "arts", "music", "film", "celebrity",
-    "lifestyle", "food", "weather", "crime", "courts", "law, crime and justice", "health",
-    "science", "technology", "business", "markets",
-]
-
 
 def _word_pattern(words, *, case_sensitive=False):
     escaped = sorted({re.escape(w) for w in words}, key=len, reverse=True)
@@ -134,10 +107,110 @@ _LEADER_RE = _word_pattern(_LEADERS, case_sensitive=True)
 _PLACE_RE = _word_pattern(_PLACES, case_sensitive=True)
 _PLACE_PHRASE_RE = _word_pattern(_PLACE_PHRASES)
 _SUPPORT_RE = _word_pattern(_SUPPORT)
-_OFF_TOPIC_RE = _word_pattern(_OFF_TOPIC + ["box office", "grand final", "royal baby", "weather forecast", "tv series"])
+_OFF_TOPIC_RE = _word_pattern(
+    _OFF_TOPIC + ["box office", "grand final", "royal baby", "weather forecast", "tv series",
+                  "premier league", "man city"]
+)
 
 
 _NOT_MILITARY_RE = re.compile(r"\bhome[- ]invasions?\b|\bpest invasions?\b", re.IGNORECASE)
+
+_WAR_CORE_RE = _word_pattern(
+    "war wars warfare ceasefire cease-fire truce armistice invasion invade invaded "
+    "invades occupation occupied annexation annexed bombardment shelling frontline "
+    "front line armed conflict coup coups junta juntas insurgency".split()
+)
+_ATTACK_RE = _word_pattern(
+    "attack attacks attacked airstrike airstrikes strike strikes struck missile missiles "
+    "drone drones shelling".split()
+)
+_THREAT_RE = _word_pattern("threat threats threaten threatens threatened threatening".split())
+_DIPLOMACY_CORE_RE = _word_pattern(
+    "diplomacy diplomatic diplomats diplomat treaty treaties accord accords negotiation "
+    "negotiations negotiators ceasefire truce armistice".split()
+)
+_DIPLOMACY_PHRASE_RE = _word_pattern(
+    ["peace talks", "peace deal", "diplomatic ties", "foreign policy", "foreign affairs",
+     "bilateral talks", "trade talks", "climate talks"]
+)
+_SANCTIONS_RE = _word_pattern(
+    ["sanction", "sanctions", "embargo", "embargoes", "blockade", "blockades",
+     "tariff", "tariffs"]
+)
+_ELECTION_RE = _word_pattern(
+    "election elections electoral referendum president-elect".split()
+)
+_DOMESTIC_PLACES = {"australia", "australian", "canberra"}
+_SUMMIT_RE = re.compile(
+    r"\b(?:summits?|UN|NATO|EU|G[- ]?7|G[- ]?20|BRICS|ASEAN|COP\d+|"
+    r"climate talks|general assembly|security council|european union|african union)\b",
+    re.IGNORECASE,
+)
+_SUMMIT_ACTION_RE = _word_pattern(
+    "attend attending attends attended skip skips skipped skipping boycott boycotts "
+    "boycotted negotiate negotiates negotiated negotiation negotiations deal agreement "
+    "accord resolution deadlock deadlocked dispute disputes walkout meet meets meeting met".split()
+)
+_STATE_ACTOR_RE = _word_pattern(
+    ["president", "presidents", "prime minister", "minister", "ministers", "trade ministers",
+     "foreign leaders", "foreign minister", "foreign ministers", "world leaders",
+     "heads of state", "government", "governments", "member states", "delegates", "countries"]
+)
+_DIPLOMATIC_OUTCOME_RE = _word_pattern(
+    "deal agreement accord treaty resolution compromise negotiated adopted signed".split()
+)
+_HISTORICAL_CONTEXT_RE = _word_pattern(
+    ["historical", "historian", "historians", "century-old", "decades ago", "years ago",
+     "world war i", "world war ii", "wwi", "wwii", "archive", "archival"]
+)
+_CURRENT_DEVELOPMENT_RE = _word_pattern(
+    "currently ongoing today now renewed resumes resumed reignites reignited escalates "
+    "escalated continues continued".split()
+)
+_STATE_SECURITY_RE = _word_pattern(
+    "espionage spying spy spies".split()
+    + ["intelligence service", "foreign agent", "state-sponsored",
+       "government-backed", "national security"]
+)
+_TERRORISM_RE = _word_pattern(
+    "terror terrorism terrorist terrorists hijacking".split()
+)
+_CROSS_BORDER_RE = _word_pattern(
+    ["cross-border", "cross border", "international response", "international aid"]
+)
+_INCIDENT_RE = _word_pattern(
+    "earthquake tsunami disaster capsized capsizes capsizing sank sinking shipwreck "
+    "migrant boat migrant boats".split()
+)
+_MIGRANT_BOAT_DISASTER_RE = re.compile(
+    r"\bmigrant boats?\b.{0,100}\b(?:capsiz\w*|sank|sinking|shipwreck\w*|disaster|"
+    r"dead|killed|missing|drown\w*)\b|\b(?:capsiz\w*|sank|shipwreck\w*|disaster|"
+    r"drown\w*)\b.{0,100}\bmigrant boats?\b",
+    re.IGNORECASE,
+)
+_PERSONAL_SUMMIT_RE = re.compile(
+    r"\b(?:activist|activists|celebrity|celebrities|actor|actress|singer)\b.{0,100}"
+    r"\b(?:arriv\w*|appear\w*|attend\w*|join\w*|remarks?|speech|spoke|commentary|activism|advocacy)\b"
+    r".{0,100}\b(?:summit|COP\d*|G[- ]?7|G20|UN|NATO)\b"
+    r"|\b(?:summit|COP\d*|G[- ]?7|G20|UN|NATO)\b.{0,100}"
+    r"\b(?:activist|activists|celebrity|celebrities|actor|actress|singer)\b.{0,100}"
+    r"\b(?:arriv\w*|appear\w*|attend\w*|join\w*|remarks?|speech|spoke|commentary|activism|advocacy)\b",
+    re.IGNORECASE,
+)
+_CORPORATE_SCANDAL_RE = _word_pattern(
+    "CEO CEOs company corporate corporation stock stocks shares shareholder scandal affair "
+    "earnings".split()
+)
+_PERSONAL_OR_MARKET_RE = _word_pattern(
+    "affair affairs stock stocks shares shareholder scandal".split()
+)
+_GOVERNMENT_INVESTIGATION_RE = re.compile(
+    r"\b(?:government|state|national security|intelligence|police|prosecutors?)\b"
+    r".{0,100}\b(?:investigat\w*|probe|probes|probing|inquir\w*)\b"
+    r"|\b(?:investigat\w*|probe|probes|probing|inquir\w*)\b.{0,100}"
+    r"\b(?:government|state|national security|intelligence|police|prosecutors?)\b",
+    re.IGNORECASE,
+)
 
 
 def _distinct(pattern, text):
@@ -145,18 +218,15 @@ def _distinct(pattern, text):
 
 
 def assess(headline: str, summary: str = "", tags=(), url: str = "") -> tuple[bool, int, str]:
-    """Return (is_geopolitical, score, short human-readable reason)."""
+    """Classify from article text only; tags and URL are accepted for API compatibility."""
     headline = _NOT_MILITARY_RE.sub(" ", headline)
     summary = _NOT_MILITARY_RE.sub(" ", summary)
     text = f"{headline}\n{summary}"
-    tag_terms = {str(t).strip().lower() for t in tags if t}
 
     strong = _distinct(_STRONG_RE, text) | _distinct(_ORG_RE, text) | _distinct(_ORG_NAME_RE, text)
     leaders = _distinct(_LEADER_RE, text)
     places = _distinct(_PLACE_RE, text) | _distinct(_PLACE_PHRASE_RE, text)
     support = _distinct(_SUPPORT_RE, text)
-    geo_tags = tag_terms & set(_GEO_TAGS)
-    places |= tag_terms & set(_REGION_TAGS)
 
     # Headline hits count double: the headline is what a reader sees.
     headline_strong = _distinct(_STRONG_RE, headline) | _distinct(_ORG_RE, headline) \
@@ -167,21 +237,89 @@ def assess(headline: str, summary: str = "", tags=(), url: str = "") -> tuple[bo
         + 2 * len(headline_strong)
         + min(len(places), 3)
         + min(len(support), 2)
-        + 2 * min(len(geo_tags), 2)
     )
 
-    off_topic = _distinct(_OFF_TOPIC_RE, headline) | (tag_terms & set(_OFF_TOPIC_TAGS))
-    path = url.lower()
-    if any(seg in path for seg in ("/sport/", "/sports/", "/football/", "/entertainment/",
-                                   "/lifestyle/", "/culture/")):
-        off_topic.add("section")
-
-    signals = sorted(strong | leaders | geo_tags)[:4] or sorted(places | support)[:3]
-    if off_topic and score < VETO_OVERRIDE:
-        return False, score, "off-topic: " + ", ".join(sorted(off_topic)[:3])
-    # Two countries in one headline usually means relations between states.
     headline_places = _distinct(_PLACE_RE, headline) | _distinct(_PLACE_PHRASE_RE, headline)
-    core = strong or leaders or geo_tags or len(headline_places) >= 2
-    if core and score >= THRESHOLD:
+    foreign_places = places - _DOMESTIC_PLACES
+    two_countries = len(headline_places) >= 2
+    conflict = bool(_WAR_CORE_RE.search(text)) or (
+        bool(_ATTACK_RE.search(text)) and (two_countries or bool(_ORG_RE.search(text)))
+    ) or (
+        bool(_THREAT_RE.search(text))
+        and bool(_word_pattern(["weapons", "military", "nuclear", "missile"]).search(text))
+        and bool(places | leaders)
+    )
+    diplomacy = bool(_DIPLOMACY_CORE_RE.search(text) or _DIPLOMACY_PHRASE_RE.search(text))
+    sanctions = bool(_SANCTIONS_RE.search(text)) and (
+        bool(foreign_places) or bool(re.search(r"\binternational sanctions\b", text, re.I))
+    )
+    foreign_election = bool(_ELECTION_RE.search(text)) and bool(foreign_places)
+    summit_negotiation = (
+        bool(_SUMMIT_RE.search(text))
+        and bool(_SUMMIT_ACTION_RE.search(text))
+        and bool(foreign_places or leaders or _STATE_ACTOR_RE.search(text))
+    )
+    un_leadership = (
+        bool(_ORG_RE.search(text))
+        and bool(_word_pattern(["secretary-general"]).search(text))
+        and bool(_ELECTION_RE.search(text) or re.search(r"\bwho\b.{0,30}\bnext\b", text, re.I))
+    )
+    state_espionage = bool(_STATE_SECURITY_RE.search(text)) and bool(
+        foreign_places or leaders or _GOVERNMENT_INVESTIGATION_RE.search(text)
+    )
+    government_security_investigation = (
+        bool(_GOVERNMENT_INVESTIGATION_RE.search(text))
+        and bool(_STATE_SECURITY_RE.search(text))
+    )
+    international_terrorism = bool(_TERRORISM_RE.search(text)) and (
+        bool(re.search(r"\binternational|transnational|global\b", text, re.I))
+        or two_countries
+        or bool(_ORG_RE.search(text))
+    )
+    cross_border_crisis = (
+        bool(_CROSS_BORDER_RE.search(text))
+        and (bool(_INCIDENT_RE.search(text)) or bool(_ATTACK_RE.search(text)))
+    ) or (
+        bool(_INCIDENT_RE.search(text))
+        and bool(re.search(r"\b(?:international|foreign)\s+(?:rescue|relief|response|aid)\b", text, re.I))
+    ) or bool(_MIGRANT_BOAT_DISASTER_RE.search(text))
+    core = any((
+        conflict, diplomacy, sanctions, foreign_election, summit_negotiation,
+        un_leadership, state_espionage, international_terrorism, cross_border_crisis,
+    ))
+
+    personal_summit = bool(_PERSONAL_SUMMIT_RE.search(text)) and not bool(
+        _DIPLOMATIC_OUTCOME_RE.search(text)
+    )
+    historical_without_current_angle = (
+        bool(_HISTORICAL_CONTEXT_RE.search(text))
+        and not bool(_CURRENT_DEVELOPMENT_RE.search(text))
+    )
+    government_investigation_match = _GOVERNMENT_INVESTIGATION_RE.search(headline)
+    corporate_or_market_match = _CORPORATE_SCANDAL_RE.search(headline)
+    corporate_fallout_leads = (
+        corporate_or_market_match is not None
+        and (
+            government_investigation_match is None
+            or corporate_or_market_match.start() < government_investigation_match.start()
+        )
+    )
+    corporate_fallout = (
+        bool(_CORPORATE_SCANDAL_RE.search(headline))
+        and bool(_PERSONAL_OR_MARKET_RE.search(headline) or _STATE_SECURITY_RE.search(text))
+        and (not government_security_investigation or corporate_fallout_leads)
+    )
+    if personal_summit:
+        return False, score, "not geopolitical (personal summit appearance)"
+    if historical_without_current_angle:
+        return False, score, "not geopolitical (historical story without a current angle)"
+    if corporate_fallout:
+        return False, score, "not geopolitical (corporate or personal fallout)"
+
+    off_topic = _distinct(_OFF_TOPIC_RE, headline)
+    signals = sorted(strong | leaders)[:4] or sorted(places | support)[:3]
+    if off_topic and not core:
+        return False, score, "off-topic: " + ", ".join(sorted(off_topic)[:3])
+    if core:
         return True, score, "geopolitics: " + ", ".join(signals)
     return False, score, "not geopolitical" + (f" (only: {', '.join(signals)})" if signals else "")
