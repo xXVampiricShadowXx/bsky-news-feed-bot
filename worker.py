@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -17,6 +18,14 @@ POST_CHECK_SECONDS = 5  # how often we check for anything due to post right now
 MAX_POST_ATTEMPTS = 8
 RETRY_MINUTES = [1, 5, 15, 60, 360, 720, 1440]
 BACKUP_SECONDS = 24 * 3600
+REPOST_POLL_SECONDS = 15 * 60
+REPOST_FEED_URI = os.getenv(
+    "BLUESKY_REPOST_FEED_URI",
+    "at://did:plc:uwnijebztfbgkyeqkhp2ddmx/app.bsky.feed.generator/ap-world-news",
+)
+REPOST_ACCOUNT_DID = os.getenv(
+    "BLUESKY_REPOST_ACCOUNT_DID", "did:plc:uwnijebztfbgkyeqkhp2ddmx"
+)
 
 
 class BotWorker:
@@ -24,12 +33,15 @@ class BotWorker:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._post_thread: threading.Thread | None = None
+        self._repost_thread: threading.Thread | None = None
         self._publisher = BlueskyPublisher()
         self._caught_up_feed_ids: set[int] = set()
+        self._repost_caught_up = False
         self._poll_lock = threading.Lock()
         self.started_at = time.time()
         self.last_poll_finished_at: float | None = None
         self.last_publish_check_at: float | None = None
+        self.last_repost_poll_finished_at: float | None = None
         self._last_backup_at: float | None = None
 
     def health(self) -> dict:
@@ -48,8 +60,17 @@ class BotWorker:
 
         poller = loop_state(self._thread, self.last_poll_finished_at, POLL_SECONDS)
         poster = loop_state(self._post_thread, self.last_publish_check_at, POST_CHECK_SECONDS)
-        healthy = all(s["alive"] and not s["stalled"] for s in (poller, poster))
-        return {"ok": healthy, "uptime_seconds": round(now - self.started_at), "poller": poller, "publisher": poster}
+        reposter = loop_state(
+            self._repost_thread, self.last_repost_poll_finished_at, REPOST_POLL_SECONDS
+        )
+        healthy = all(s["alive"] and not s["stalled"] for s in (poller, poster, reposter))
+        return {
+            "ok": healthy,
+            "uptime_seconds": round(now - self.started_at),
+            "poller": poller,
+            "publisher": poster,
+            "reposter": reposter,
+        }
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -59,8 +80,12 @@ class BotWorker:
         self._post_thread = threading.Thread(
             target=self._run_posts, name="bluesky-publisher", daemon=True
         )
+        self._repost_thread = threading.Thread(
+            target=self._run_reposts, name="bluesky-reposter", daemon=True
+        )
         self._thread.start()
         self._post_thread.start()
+        self._repost_thread.start()
 
     def _run(self) -> None:
         while not self._stop.is_set():
@@ -91,6 +116,83 @@ class BotWorker:
                 db.add_event("error", f"Publisher recovered from an unexpected error: {exc}")
             self.last_publish_check_at = time.time()
             self._stop.wait(POST_CHECK_SECONDS)
+
+    def _run_reposts(self) -> None:
+        while not self._stop.is_set():
+            started_at = time.monotonic()
+            try:
+                if db.setting("reposting_enabled", "0") == "1":
+                    if self._repost_caught_up:
+                        self.poll_custom_repost_feed()
+                    else:
+                        self.activate_custom_repost_feed()
+            except Exception as exc:
+                db.add_event("error", f"Custom-feed repost poll failed: {exc}")
+            self.last_repost_poll_finished_at = time.time()
+            self._stop.wait(max(0, REPOST_POLL_SECONDS - (time.monotonic() - started_at)))
+
+    def _custom_repost_feed_items(self):
+        self._publisher.check_repost_account(REPOST_ACCOUNT_DID)
+        feed_items = []
+        cursor = None
+        seen_cursors = set()
+        while True:
+            response = self._publisher.get_feed(REPOST_FEED_URI, cursor)
+            feed_items.extend(getattr(response, "feed", []) or [])
+            cursor = getattr(response, "cursor", None)
+            if not cursor:
+                break
+            if cursor in seen_cursors:
+                raise RuntimeError("Bluesky returned a repeated custom-feed cursor.")
+            seen_cursors.add(cursor)
+        return feed_items
+
+    def activate_custom_repost_feed(self) -> int:
+        """Set a feed baseline so existing posts are never replayed after startup."""
+        feed_items = self._custom_repost_feed_items()
+        posts = []
+        for item in feed_items:
+            post = getattr(item, "post", None)
+            uri = getattr(post, "uri", None) if post else None
+            cid = getattr(post, "cid", None) if post else None
+            if not uri:
+                db.add_event("error", "Skipped a custom-feed baseline item without a post URI.")
+                continue
+            posts.append((uri, cid or ""))
+        db.seed_reposts(posts)
+        self._repost_caught_up = True
+        db.add_event(
+            "info",
+            f"Established the custom-feed repost baseline with {len(posts)} existing post(s); "
+            "they were not reposted.",
+        )
+        return len(posts)
+
+    def poll_custom_repost_feed(self) -> None:
+        feed_items = self._custom_repost_feed_items()
+        for item in reversed(feed_items):
+            if db.setting("reposting_enabled", "0") != "1":
+                return
+            post = getattr(item, "post", None)
+            uri = getattr(post, "uri", None) if post else None
+            cid = getattr(post, "cid", None) if post else None
+            if not uri:
+                db.add_event("error", "Skipped a custom-feed item without a post URI.")
+                continue
+            if not db.claim_repost(uri, cid or ""):
+                continue
+            if not cid:
+                error = "Feed item has no CID."
+                db.finish_repost(uri, error=error)
+                db.add_event("error", f"Could not repost {uri}: {error}")
+                continue
+            try:
+                repost_uri = self._publisher.repost(uri, cid, REPOST_ACCOUNT_DID)
+                db.finish_repost(uri, repost_uri=repost_uri)
+                db.add_event("success", f"Reposted custom-feed item {uri}.")
+            except Exception as exc:
+                db.finish_repost(uri, error=f"{type(exc).__name__}: {exc}")
+                db.add_event("error", f"Could not repost {uri}; it will not be retried: {exc}")
 
     def activate_feed(self, feed_id: int) -> int:
         feed = db.get_feed(feed_id)

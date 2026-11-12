@@ -241,6 +241,7 @@ class BlueskyPublisher:
         self.handle = os.getenv("BLUESKY_HANDLE", "oninews.bsky.social").strip()
         self.app_password = os.getenv("BLUESKY_APP_PASSWORD", "").strip()
         self._client: Client | None = None
+        self._appview_client: Client | None = None
         self._lock = threading.Lock()
 
     @property
@@ -273,6 +274,55 @@ class BlueskyPublisher:
             self._forget_client()
             raise
         return self.handle
+
+    def check_repost_account(self, expected_did: str) -> str:
+        client = self._get_client()
+        did = getattr(getattr(client, "me", None), "did", None)
+        if not did:
+            raise RuntimeError("Bluesky did not return the authenticated account DID.")
+        if expected_did and did != expected_did:
+            raise RuntimeError(
+                f"Reposting is restricted to {expected_did}; the configured login is {did}."
+            )
+        return did
+
+    def get_feed(
+        self, feed_uri: str, cursor: str | None = None
+    ) -> models.AppBskyFeedGetFeed.Response:
+        """Read the public custom feed from Bluesky's public AppView."""
+        with self._lock:
+            if self._appview_client is None:
+                self._appview_client = Client("https://public.api.bsky.app")
+            client = self._appview_client
+        params = models.AppBskyFeedGetFeed.Params(feed=feed_uri, limit=100, cursor=cursor)
+        return client.app.bsky.feed.get_feed(params)
+
+    def repost(self, post_uri: str, post_cid: str, expected_did: str) -> str:
+        client = self._get_client()
+        repo = self.check_repost_account(expected_did)
+        now = (
+            client.get_current_time_iso()
+            if hasattr(client, "get_current_time_iso")
+            else datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace(
+                "+00:00", "Z"
+            )
+        )
+        record = models.AppBskyFeedRepost.Record(
+            subject=models.ComAtprotoRepoStrongRef.Main(uri=post_uri, cid=post_cid),
+            created_at=now,
+        )
+        data = models.ComAtprotoRepoCreateRecord.Data(
+            repo=repo,
+            collection="app.bsky.feed.repost",
+            record=record,
+        )
+        try:
+            result = client.com.atproto.repo.create_record(data)
+        except Exception as exc:
+            if _is_session_error(exc):
+                self._forget_client()
+            raise
+        return str(result.uri)
 
     def post_story(
         self,

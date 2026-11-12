@@ -31,7 +31,7 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 import db
 from feeds import fetch_snapshot
 from publisher import BlueskyPublisher
-from worker import BotWorker
+from worker import BotWorker, REPOST_ACCOUNT_DID, REPOST_FEED_URI
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -217,6 +217,8 @@ def index():
         bluesky_handle=publisher.handle,
         bluesky_configured=publisher.configured,
         autopost_enabled=db.setting("autopost_enabled", "0") == "1",
+        reposting_enabled=db.setting("reposting_enabled", "0") == "1",
+        repost_feed_uri=REPOST_FEED_URI,
     )
 
 
@@ -366,6 +368,29 @@ def toggle_autopost():
                 f"Could not start automatic posting: {exc} Check the local .env file and restart the app.",
                 "error",
             )
+    return redirect(url_for("index"))
+
+
+@app.post("/settings/toggle-reposting")
+def toggle_reposting():
+    enabled = db.setting("reposting_enabled", "0") == "1"
+    if enabled:
+        db.set_setting("reposting_enabled", "0")
+        worker._repost_caught_up = False
+        db.add_event("info", "Custom-feed reposting was paused.")
+        flash("Custom-feed reposting is paused.", "success")
+    else:
+        try:
+            worker.activate_custom_repost_feed()
+            db.set_setting("reposting_enabled", "1")
+            db.add_event("info", f"Custom-feed reposting started for {REPOST_ACCOUNT_DID}.")
+            flash(
+                f"Custom-feed reposting is on for {REPOST_ACCOUNT_DID}. "
+                "Existing feed items were skipped; it checks every 15 minutes.",
+                "success",
+            )
+        except Exception as exc:
+            flash(f"Could not start custom-feed reposting: {exc}", "error")
     return redirect(url_for("index"))
 
 

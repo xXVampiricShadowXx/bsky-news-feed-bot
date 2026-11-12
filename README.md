@@ -31,12 +31,19 @@ Your Bluesky credentials stay in the local `.env` file and are not stored in the
 
 Multiple feeds can use the same publisher profile and logo. Disable a feed to stop watching it. Remove a feed or source from the dashboard when you no longer want it.
 
+## Repost the AP World News custom feed
+
+The dashboard also has a separate, paused-by-default **Start custom-feed reposting** control. It polls the AP World News feed every 15 minutes through Bluesky's public AppView and reposts available items oldest-first. The feed URI and account DID can be overridden with `BLUESKY_REPOST_FEED_URI` and `BLUESKY_REPOST_ACCOUNT_DID` in `.env`.
+
+Reposting uses the same Bluesky app password as RSS posting. Before enabling it, use **Check connection** and confirm `BLUESKY_HANDLE` authenticates as `BLUESKY_REPOST_ACCOUNT_DID`; the dashboard refuses to start reposting under a different account. Enabling reposting and each app restart snapshot the current feed into SQLite as a baseline without reposting those posts. Only items that appear after the baseline are reposted, so posts that accumulated while the app was offline are skipped. Each post URI is recorded before any repost attempt, so successful and failed attempts are never repeated. A failed/deleted post is logged and skipped rather than retried. Repost history is stored in `instance/bot.sqlite3`.
+
 ## Safety controls and behavior
 
 - The app listens on `127.0.0.1` by default. Set `APP_HOST` and `DASHBOARD_PASSWORD` to allow access from other devices (any username works). Use HTTPS or a trusted tunnel for remote access; HTTP Basic authentication does not encrypt the password.
 - Docker listens on all container interfaces. Publish its port to `127.0.0.1` and set `ALLOW_OPEN_DASHBOARD=1` for local-only access without a password, as in `docker-compose.yml`. Do not use that override for a publicly exposed dashboard.
-- `/health` is available without a password and returns HTTP 503 if either background loop is dead or stalled.
+- `/health` is available without a password and returns HTTP 503 if any background loop is dead or stalled.
 - Automatic posting starts paused. You must test the Bluesky connection and turn it on in the dashboard.
+- Custom-feed reposting is an independent feature and also starts paused. It can be paused separately from RSS auto-posting.
 - Stories discovered while auto-posting is paused are skipped. Resuming does not produce a backlog burst.
 - A normalized article URL can only be posted once across all connected feeds, including common tracking-tag and fragment variants. This history stays in the local database even if a feed is removed. Stories published at different URLs are not assumed to be duplicates based only on similar headlines.
 - Transient Bluesky errors retry with increasing delays, up to eight attempts. A story that exceeds Bluesky's post length limit is marked failed instead of silently shortening its headline.

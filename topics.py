@@ -159,6 +159,14 @@ _STATE_ACTOR_RE = _word_pattern(
 _DIPLOMATIC_OUTCOME_RE = _word_pattern(
     "deal agreement accord treaty resolution compromise negotiated adopted signed".split()
 )
+_HISTORICAL_CONTEXT_RE = _word_pattern(
+    ["historical", "historian", "historians", "century-old", "decades ago", "years ago",
+     "world war i", "world war ii", "wwi", "wwii", "archive", "archival"]
+)
+_CURRENT_DEVELOPMENT_RE = _word_pattern(
+    "currently ongoing today now renewed resumes resumed reignites reignited escalates "
+    "escalated continues continued".split()
+)
 _STATE_SECURITY_RE = _word_pattern(
     "espionage spying spy spies".split()
     + ["intelligence service", "foreign agent", "state-sponsored",
@@ -283,13 +291,28 @@ def assess(headline: str, summary: str = "", tags=(), url: str = "") -> tuple[bo
     personal_summit = bool(_PERSONAL_SUMMIT_RE.search(text)) and not bool(
         _DIPLOMATIC_OUTCOME_RE.search(text)
     )
+    historical_without_current_angle = (
+        bool(_HISTORICAL_CONTEXT_RE.search(text))
+        and not bool(_CURRENT_DEVELOPMENT_RE.search(text))
+    )
+    government_investigation_match = _GOVERNMENT_INVESTIGATION_RE.search(headline)
+    corporate_or_market_match = _CORPORATE_SCANDAL_RE.search(headline)
+    corporate_fallout_leads = (
+        corporate_or_market_match is not None
+        and (
+            government_investigation_match is None
+            or corporate_or_market_match.start() < government_investigation_match.start()
+        )
+    )
     corporate_fallout = (
         bool(_CORPORATE_SCANDAL_RE.search(headline))
         and bool(_PERSONAL_OR_MARKET_RE.search(headline) or _STATE_SECURITY_RE.search(text))
-        and not government_security_investigation
+        and (not government_security_investigation or corporate_fallout_leads)
     )
     if personal_summit:
         return False, score, "not geopolitical (personal summit appearance)"
+    if historical_without_current_angle:
+        return False, score, "not geopolitical (historical story without a current angle)"
     if corporate_fallout:
         return False, score, "not geopolitical (corporate or personal fallout)"
 

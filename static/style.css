@@ -57,6 +57,7 @@ code { padding: 2px 5px; border-radius: 5px; background: #0d151e; color: #b8d4ef
 .hero-stats span { color: var(--muted); font-size: 11px; }
 .setup-grid { display: grid; grid-template-columns: 1.15fr .85fr; gap: 16px; margin-bottom: 16px; }
 .setup-card, .format-card { min-height: 280px; }
+.repost-feed-uri { display: block; margin-top: 4px; overflow-wrap: anywhere; }
 .section-heading { justify-content: space-between; gap: 12px; margin-bottom: 10px; }
 .section-heading .eyebrow { margin-bottom: 2px; }
 .setup-card > .muted { margin-bottom: 10px; }

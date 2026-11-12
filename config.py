@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 
-VERSION = "1.0.0"
+VERSION = "1.2.0"
 REPO_URL = "https://github.com/xXVampiricShadowXx/bsky-news-feed-bot"
 USER_AGENT = f"BlueskyNewsFeedBot/{VERSION} (+{REPO_URL})"
 DEFAULT_BOT_NAME = "News Feed Bot"

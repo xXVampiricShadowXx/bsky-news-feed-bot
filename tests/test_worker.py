@@ -178,6 +178,28 @@ class FeedStorageTests(unittest.TestCase):
         self.addCleanup(copy.close)
         self.assertEqual(1, copy.execute("SELECT COUNT(*) FROM feeds").fetchone()[0])
 
+    def test_repost_attempts_are_persisted_at_most_once(self):
+        uri = "at://did:plc:author/app.bsky.feed.post/one"
+        self.assertEqual(1, db.seed_reposts([(uri, "cid-one")]))
+        self.assertFalse(db.claim_repost(uri, "cid-one"))
+        with db.connection() as conn:
+            row = conn.execute(
+                "SELECT status FROM repost_attempts WHERE post_uri = ?", (uri,)
+            ).fetchone()
+        self.assertEqual("baseline", row["status"])
+
+    def test_repost_attempts_are_persisted_at_most_once_after_attempt(self):
+        uri = "at://did:plc:author/app.bsky.feed.post/one"
+        self.assertTrue(db.claim_repost(uri, "cid-one"))
+        self.assertFalse(db.claim_repost(uri, "cid-one"))
+        db.finish_repost(uri, error="network error")
+        self.assertFalse(db.claim_repost(uri, "cid-one"))
+        with db.connection() as conn:
+            row = conn.execute(
+                "SELECT status, last_error FROM repost_attempts WHERE post_uri = ?", (uri,)
+            ).fetchone()
+        self.assertEqual(("failed", "network error"), (row["status"], row["last_error"]))
+
     def test_pausing_or_disabling_feed_prevents_late_queueing(self):
         db.set_setting("autopost_enabled", "0")
         inserted = db.store_feed_items(
@@ -240,10 +262,11 @@ class WorkerTests(unittest.TestCase):
     def test_health_reports_stalled_or_dead_loops(self):
         self.assertFalse(self.bot.health()["ok"])  # threads never started
         alive = SimpleNamespace(is_alive=lambda: True)
-        self.bot._thread = self.bot._post_thread = alive
+        self.bot._thread = self.bot._post_thread = self.bot._repost_thread = alive
         now = worker.time.time()
         self.bot.last_poll_finished_at = now
         self.bot.last_publish_check_at = now
+        self.bot.last_repost_poll_finished_at = now
         self.assertTrue(self.bot.health()["ok"])
         self.bot.last_poll_finished_at = now - 3600
         state = self.bot.health()
@@ -308,7 +331,8 @@ class WorkerTests(unittest.TestCase):
         with patch.object(worker.db, "setting", return_value="1"), \
              patch.object(worker, "POLL_SECONDS", 0.05), \
              patch.object(self.bot, "poll_enabled_feeds", side_effect=record_poll), \
-             patch.object(self.bot, "publish_pending", side_effect=block_post):
+             patch.object(self.bot, "publish_pending", side_effect=block_post), \
+             patch.object(self.bot, "poll_custom_repost_feed"):
             self.bot.start()
             try:
                 self.assertTrue(posting.wait(2))
@@ -319,6 +343,7 @@ class WorkerTests(unittest.TestCase):
                 release.set()
                 self.bot._thread.join(3)
                 self.bot._post_thread.join(3)
+                self.bot._repost_thread.join(3)
 
     def test_publisher_waits_for_completed_poll_before_reading_new_items(self):
         entered_poll = threading.Event()
@@ -349,6 +374,126 @@ class WorkerTests(unittest.TestCase):
                 if posting.ident is not None:
                     posting.join(3)
             self.assertTrue(read_pending.is_set())
+
+    def test_custom_feed_reposts_oldest_first_and_skips_failed_attempts(self):
+        oldest = SimpleNamespace(post=SimpleNamespace(
+            uri="at://did:plc:author/app.bsky.feed.post/oldest", cid="cid-oldest"
+        ))
+        middle = SimpleNamespace(post=SimpleNamespace(
+            uri="at://did:plc:author/app.bsky.feed.post/middle", cid="cid-middle"
+        ))
+        newest = SimpleNamespace(post=SimpleNamespace(
+            uri="at://did:plc:author/app.bsky.feed.post/newest", cid="cid-newest"
+        ))
+        attempted = set()
+        reposted = []
+        failures = []
+
+        def claim(uri, _cid):
+            if uri in attempted:
+                return False
+            attempted.add(uri)
+            return True
+
+        def repost(uri, cid, expected_did):
+            self.assertEqual(worker.REPOST_ACCOUNT_DID, expected_did)
+            if uri.endswith("/middle"):
+                raise RuntimeError("post was deleted")
+            reposted.append((uri, cid))
+            return f"at://did:plc:account/app.bsky.feed.repost/{cid}"
+
+        self.bot._publisher.check_repost_account = MagicMock()
+        self.bot._publisher.get_feed = MagicMock(side_effect=lambda _uri, cursor:
+            SimpleNamespace(feed=[newest, middle], cursor="older")
+            if cursor is None else SimpleNamespace(feed=[oldest], cursor=None)
+        )
+        self.bot._publisher.repost = MagicMock(side_effect=repost)
+        with patch.object(worker.db, "setting", return_value="1"), \
+             patch.object(worker.db, "claim_repost", side_effect=claim), \
+             patch.object(worker.db, "finish_repost") as finish, \
+             patch.object(worker.db, "add_event", side_effect=lambda level, message:
+                          failures.append((level, message)) if level == "error" else None):
+            self.bot.poll_custom_repost_feed()
+            self.assertEqual(
+                [
+                    ("at://did:plc:author/app.bsky.feed.post/oldest", "cid-oldest"),
+                    ("at://did:plc:author/app.bsky.feed.post/newest", "cid-newest"),
+                ],
+                reposted,
+            )
+            self.assertEqual(
+                ["at://did:plc:author/app.bsky.feed.post/oldest",
+                 "at://did:plc:author/app.bsky.feed.post/middle",
+                 "at://did:plc:author/app.bsky.feed.post/newest"],
+                [call.args[0] for call in finish.call_args_list],
+            )
+            self.assertEqual(1, len(failures))
+            self.assertIn("will not be retried", failures[0][1])
+            self.assertEqual(
+                [None, "older"],
+                [call.args[1] for call in self.bot._publisher.get_feed.call_args_list],
+            )
+            self.bot.poll_custom_repost_feed()
+            self.assertEqual(3, self.bot._publisher.repost.call_count)
+
+    def test_custom_feed_poll_stops_when_reposting_is_paused(self):
+        posts = [
+            SimpleNamespace(post=SimpleNamespace(
+                   uri=f"at://did:plc:author/app.bsky.feed.post/{name}", cid=f"cid-{name}"
+            ))
+            for name in ("newer", "older")
+        ]
+        self.bot._publisher.check_repost_account = MagicMock()
+        self.bot._publisher.get_feed = MagicMock(
+            return_value=SimpleNamespace(feed=posts, cursor=None)
+        )
+        self.bot._publisher.repost = MagicMock(return_value="repost-uri")
+
+        with patch.object(worker.db, "setting", side_effect=["1", "0"]), \
+                patch.object(worker.db, "claim_repost", return_value=True), \
+                patch.object(worker.db, "finish_repost"), \
+                patch.object(worker.db, "add_event"):
+            self.bot.poll_custom_repost_feed()
+
+        self.assertEqual(1, self.bot._publisher.repost.call_count)
+
+    def test_custom_feed_baseline_skips_every_post_already_present(self):
+        oldest = SimpleNamespace(post=SimpleNamespace(
+            uri="at://did:plc:author/app.bsky.feed.post/oldest", cid="cid-oldest"
+        ))
+        newest = SimpleNamespace(post=SimpleNamespace(
+            uri="at://did:plc:author/app.bsky.feed.post/newest", cid="cid-newest"
+        ))
+        self.bot._publisher.check_repost_account = MagicMock()
+        self.bot._publisher.get_feed = MagicMock(side_effect=(
+            SimpleNamespace(feed=[newest], cursor="older"),
+            SimpleNamespace(feed=[oldest], cursor=None),
+        ))
+        with patch.object(self.bot._publisher, "repost") as repost, \
+             patch.object(worker.db, "seed_reposts", return_value=2) as seed, \
+             patch.object(worker.db, "add_event"):
+            count = self.bot.activate_custom_repost_feed()
+        self.assertEqual(2, count)
+        self.assertTrue(self.bot._repost_caught_up)
+        self.assertEqual(
+            [("at://did:plc:author/app.bsky.feed.post/newest", "cid-newest"),
+             ("at://did:plc:author/app.bsky.feed.post/oldest", "cid-oldest")],
+            seed.call_args.args[0],
+        )
+        repost.assert_not_called()
+
+    def test_first_enabled_repost_poll_only_establishes_a_baseline(self):
+        def baseline():
+            self.bot._repost_caught_up = True
+            self.bot._stop.set()
+
+        with patch.object(worker.db, "setting", return_value="1"), \
+             patch.object(self.bot, "activate_custom_repost_feed", side_effect=baseline) as activate, \
+             patch.object(self.bot, "poll_custom_repost_feed") as poll, \
+             patch.object(worker, "REPOST_POLL_SECONDS", 0):
+            self.bot._run_reposts()
+        activate.assert_called_once_with()
+        poll.assert_not_called()
 
 
 if __name__ == "__main__":

@@ -124,6 +124,15 @@ def init_db() -> None:
                 first_seen_at TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS repost_attempts (
+                post_uri TEXT PRIMARY KEY,
+                post_cid TEXT NOT NULL,
+                status TEXT NOT NULL,
+                repost_uri TEXT,
+                last_error TEXT,
+                attempted_at TEXT NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS events (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 level TEXT NOT NULL,
@@ -215,6 +224,9 @@ def init_db() -> None:
         )
         conn.execute(
             "INSERT OR IGNORE INTO settings(key, value) VALUES('geopolitics_only', '1')"
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO settings(key, value) VALUES('reposting_enabled', '0')"
         )
 
 
@@ -541,6 +553,42 @@ def mark_post_failed(item_id: int, attempts: int, error: str, retry_at: str | No
             """UPDATE items SET status = ?, attempts = ?, next_attempt_at = ?, last_error = ?
                WHERE id = ?""",
             (status, attempts, retry_at, error[:500], item_id),
+        )
+
+
+def claim_repost(post_uri: str, post_cid: str) -> bool:
+    """Persist an at-most-once attempt before creating its Bluesky repost."""
+    with connection() as conn:
+        cursor = conn.execute(
+            """INSERT OR IGNORE INTO repost_attempts
+               (post_uri, post_cid, status, attempted_at)
+               VALUES(?, ?, 'attempting', ?)""",
+            (post_uri, post_cid, utc_now()),
+        )
+    return cursor.rowcount == 1
+
+
+def seed_reposts(posts: list[tuple[str, str]]) -> int:
+    """Record posts already present in the feed without attempting to repost them."""
+    if not posts:
+        return 0
+    with connection() as conn:
+        cursor = conn.executemany(
+            """INSERT OR IGNORE INTO repost_attempts
+               (post_uri, post_cid, status, attempted_at)
+               VALUES(?, ?, 'baseline', ?)""",
+            [(post_uri, post_cid, utc_now()) for post_uri, post_cid in posts],
+        )
+    return cursor.rowcount
+
+
+def finish_repost(post_uri: str, repost_uri: str | None = None, error: str | None = None) -> None:
+    status = "reposted" if repost_uri else "failed"
+    with connection() as conn:
+        conn.execute(
+            """UPDATE repost_attempts SET status = ?, repost_uri = ?, last_error = ?
+               WHERE post_uri = ?""",
+            (status, repost_uri, error[:500] if error else None, post_uri),
         )
 
 

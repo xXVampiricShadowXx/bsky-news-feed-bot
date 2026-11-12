@@ -29,11 +29,9 @@ class GeopoliticsFilterTests(unittest.TestCase):
         self.assertAccepted("Earthquake triggers major international rescue response")
         self.assertAccepted("Migrant boat disaster leaves dozens missing off Greece")
         self.assertAccepted("Government opens national security investigation into state espionage")
+        self.assertAccepted("Government opens national security investigation into TechCo's foreign ties")
         self.assertAccepted(
-            "TechCo shares fall after government opens a security investigation into espionage"
-        )
-        self.assertAccepted(
-            "TechCo shares fall after government opens a national security investigation into its foreign ties"
+            "A century-old treaty is now at the center of a dispute between France and Germany"
         )
 
     def test_rejects_domestic_and_soft_news(self):
@@ -48,8 +46,16 @@ class GeopoliticsFilterTests(unittest.TestCase):
         self.assertRejected("Australia's next election is dominated by local tax policy")
         self.assertRejected("Albanese's campaign is focused on Australia's next election")
         self.assertRejected("CEO faces questions over alleged China espionage as shares fall")
+        self.assertRejected(
+            "TechCo shares fall after government opens a security investigation into espionage"
+        )
+        self.assertRejected(
+            "TechCo shares fall after government opens a national security investigation into its foreign ties"
+        )
         self.assertRejected("UK minister sued over local housing plan")
         self.assertRejected("A century-old letter reveals a family's wartime history")
+        self.assertRejected("A century-old treaty shaped the history of Europe's borders")
+        self.assertRejected("France and Germany recall the treaty signed during World War II")
 
     def test_summit_personal_appearance_is_not_geopolitical(self):
         self.assertRejected("Activist delivers remarks on arrival at UN summit")
