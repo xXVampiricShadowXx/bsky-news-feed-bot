@@ -437,6 +437,14 @@ def assess(headline: str, summary: str = "", tags=(), url: str = "") -> tuple[bo
         bool(_INCIDENT_RE.search(text))
         and bool(re.search(r"\b(?:international|foreign)\s+(?:rescue|relief|response|aid)\b", text, re.I))
     ) or bool(_MIGRANT_BOAT_DISASTER_RE.search(text))
+    espionage_plot_context = (
+        bool(re.search(r"\b(?:spy|spying|espionage)\b.{0,70}\b(?:plot|ring|scheme|network|allegations?)\b"
+                       r"|\b(?:plot|ring|scheme|network|allegations?)\b.{0,70}\b(?:spy|spying|espionage)\b",
+                       text, re.I))
+        and bool(foreign_places or leaders or _GOVERNMENT_INVESTIGATION_RE.search(text)
+                 or re.search(r"\b(?:foreign intelligence|national security|state-sponsored)\b", text, re.I))
+    )
+
     core = any((
         conflict, diplomacy, sanctions, foreign_election, summit_negotiation,
         un_leadership, state_espionage, international_terrorism, cross_border_crisis,
@@ -461,13 +469,6 @@ def assess(headline: str, summary: str = "", tags=(), url: str = "") -> tuple[bo
             government_investigation_match is None
             or corporate_or_market_match.start() < government_investigation_match.start()
         )
-    )
-    espionage_plot_context = (
-        bool(re.search(r"\b(?:spy|spying|espionage)\b.{0,70}\b(?:plot|ring|scheme|network|allegations?)\b"
-                       r"|\b(?:plot|ring|scheme|network|allegations?)\b.{0,70}\b(?:spy|spying|espionage)\b",
-                       text, re.I))
-        and bool(foreign_places or leaders or _GOVERNMENT_INVESTIGATION_RE.search(text)
-                 or re.search(r"\b(?:foreign intelligence|national security|state-sponsored)\b", text, re.I))
     )
     corporate_fallout = (
         bool(_CORPORATE_SCANDAL_RE.search(headline))
