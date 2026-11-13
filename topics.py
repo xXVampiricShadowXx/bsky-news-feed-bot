@@ -74,7 +74,7 @@ _PLACE_PHRASES = [
     "south korean", "south africa", "south sudan", "new zealand", "west bank", "middle east",
     "latin america", "south china sea", "red sea", "black sea", "hong kong", "sri lanka",
     "ivory coast", "burkina faso", "kim jong un", "wang yi", "central african republic", "democratic republic of congo", "saudi arabia",
-    "el salvador", "costa rica", "dominican republic", "strait of hormuz", "taiwan strait",
+    "el salvador", "costa rica", "dominican republic", "strait of hormuz", "taiwan strait", "gulf of aden",
 ]
 
 _SUPPORT = r"""
@@ -122,10 +122,11 @@ _WAR_CORE_RE = _word_pattern([
     "annexation", "annexed", "bombardment", "shelling", "frontline", "coup",
     "coups", "junta", "juntas", "insurgency", "armed conflict", "front line",
 ])
-_ATTACK_RE = _word_pattern(
-    "attack attacks attacked airstrike airstrikes strike strikes struck missile missiles "
-    "drone drones shelling".split()
-)
+_ATTACK_RE = _word_pattern([
+    "attack", "attacks", "attacked", "airstrike", "airstrikes", "strike", "strikes",
+    "struck", "missile", "missiles", "drone", "drones", "shelling", "targeted",
+    "targeting", "bomb threat", "bomb threats",
+])
 _THREAT_RE = _word_pattern("threat threats threaten threatens threatened threatening".split())
 _DIPLOMACY_CORE_RE = _word_pattern(
     "diplomacy diplomatic diplomats diplomat treaty treaties accord accords negotiation "
@@ -175,7 +176,7 @@ _MARITIME_SECURITY_RE = _word_pattern([
     "merchant vessels", "cargo ship", "cargo ships",
 ])
 _POLITICAL_CANDIDACY_RE = _word_pattern([
-    "bid for the presidency", "bid for presidency", "presidential bid",
+    "bid for the presidency", "bid for the French presidency", "bid for presidency", "presidential bid",
     "run for president", "running for president", "candidate for president",
     "presidential candidate", "seeks the presidency", "seeking the presidency",
     "presidential race", "presidential campaign",
@@ -442,6 +443,7 @@ def assess(headline: str, summary: str = "", tags=(), url: str = "") -> tuple[bo
         foreign_leadership_change, security_operation, international_health_crisis,
         international_trade, international_plot, foreign_legal_political, foreign_disaster,
         maritime_security, foreign_political_candidacy, diplomatic_meeting, foreign_state_family,
+        espionage_plot_context,
     ))
 
     personal_summit = bool(_PERSONAL_SUMMIT_RE.search(text)) and not bool(
