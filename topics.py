@@ -50,7 +50,7 @@ _PLACES = r"""
 Afghanistan Afghan Albania Algeria Angola Argentina Armenia Australia Australian Austria
 Azerbaijan Bahrain Bangladesh Belarus Belgium Bolivia Bosnia Brazil Brazilian Britain British
 Bulgaria Myanmar Burma Cambodia Cameroon Canada Canadian Chad Chile China Chinese
-Colombia Congo Croatia Cuba Cuban Cyprus Czech Denmark Danish Djibouti Ecuador Egypt Egyptian
+Colombia Congo Croatia Cuba Cuban Cyprus Czech Denmark Danish Djibouti Ecuador Egypt Egyptian Europe European
 Eritrea Estonia Ethiopia Ethiopian Finland France French Gabon Gaza Gazan Georgia Germany German
 Ghana Greece Greek Greenland Guatemala Guinea Haiti Haitian Honduras Hungary Hungarian India Indian
 Indonesia Iran Iranian Iraq Iraqi Ireland Irish Israel Israeli Israelis Italy Italian Japan Japanese
