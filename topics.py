@@ -258,7 +258,7 @@ _DOMESTIC_PLACES = {
 }
 _SUMMIT_RE = re.compile(
     r"\b(?:summits?|UN|NATO|EU|G[- ]?7|G[- ]?20|BRICS|ASEAN|COP\d+|"
-    r"climate talks|general assembly|security council|european union|african union)\b",
+    r"climate talks|climate change conference|general assembly|security council|european union|african union)\b",
     re.IGNORECASE,
 )
 _SUMMIT_ACTION_RE = _word_pattern(
