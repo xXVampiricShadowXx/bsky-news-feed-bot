@@ -480,7 +480,7 @@ def assess(headline: str, summary: str = "", tags=(), url: str = "") -> tuple[bo
         return False, score, "not geopolitical (personal summit appearance)"
     if historical_without_current_angle:
         return False, score, "not geopolitical (historical story without a current angle)"
-    if corporate_fallout and not core:
+    if corporate_fallout and not espionage_plot_context:
         return False, score, "not geopolitical (corporate or personal fallout)"
 
     off_topic = _distinct(_OFF_TOPIC_RE, headline)
