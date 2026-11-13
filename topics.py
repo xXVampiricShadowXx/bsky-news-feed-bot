@@ -48,7 +48,7 @@ Guterres Rubio Lavrov Assad Sharaa Lecornu Hasina
 # Countries, regions, and demonyms. One mention is a supporting signal.
 _PLACES = r"""
 Afghanistan Afghan Albania Algeria Angola Argentina Armenia Australia Australian Austria
-Azerbaijan Bahrain Bangladesh Belarus Belgium Bolivia Bosnia Brazil Brazilian Britain British
+Azerbaijan Bahrain Bangladesh Bangladeshi Belarus Belgium Bolivia Bosnia Brazil Brazilian Britain British
 Bulgaria Myanmar Burma Cambodia Cameroon Canada Canadian Chad Chile China Chinese
 Colombia Congo Croatia Cuba Cuban Cyprus Czech Denmark Danish Djibouti Ecuador Egypt Egyptian Europe European
 Eritrea Estonia Ethiopia Ethiopian Finland France French Gabon Gaza Gazan Georgia Germany German
@@ -152,7 +152,7 @@ _LEADERSHIP_CHANGE_RE = _word_pattern([
 ])
 _GOVERNMENT_FORMATION_RE = _word_pattern([
     "form a government", "form government", "form a coalition", "form coalition",
-    "form a cabinet", "form cabinet", "government formation",
+    "form a cabinet", "form cabinet", "form the next government", "form next government", "chance to form a government", "chance to form the next government", "government formation",
 ])
 _CROSS_BORDER_LEGAL_RE = _word_pattern([
     "extradition", "extradited", "extradite", "exile", "exiled", "return from exile",
@@ -179,7 +179,7 @@ _POLITICAL_CANDIDACY_RE = _word_pattern([
     "bid for the presidency", "bid for the French presidency", "bid for presidency", "presidential bid",
     "run for president", "running for president", "candidate for president",
     "presidential candidate", "seeks the presidency", "seeking the presidency",
-    "presidential race", "presidential campaign",
+    "presidential race", "presidential campaign", "bidding for the presidency", "bidding for the French presidency", "bidding for presidency",
 ])
 _DIPLOMATIC_MEETING_RE = _word_pattern([
     "talks", "nuclear talks", "iran talks", "diplomatic talks", "bilateral talks",
@@ -218,6 +218,27 @@ _LARGE_SCALE_RE = re.compile(
     r"large[- ]scale|nationwide|across the country|spreading across)\b",
     re.IGNORECASE,
 )
+_CLIMATE_ENERGY_COOPERATION_RE = re.compile(
+    r"\b(?:roadmap|road map|plan|plans|initiative|initiatives|framework|agreement|cooperation|"
+    r"cooperate|transition|transitions|transitioning|shift|shifts|move|moving)\b"
+    r".{0,180}\b(?:fossil fuels?|renewable energ(?:y|ies)|clean energ(?:y|ies)|"
+    r"energy transition|decarboni[sz]ation)\b"
+    r"|\b(?:fossil fuels?|renewable energ(?:y|ies)|clean energ(?:y|ies)|"
+    r"energy transition|decarboni[sz]ation)\b.{0,180}"
+    r"\b(?:roadmap|road map|plan|plans|initiative|initiatives|framework|agreement|cooperation|"
+    r"cooperate|transition|transitions|transitioning|shift|shifts|move|moving)\b",
+    re.IGNORECASE,
+)
+_SPORTS_DIPLOMACY_RE = _word_pattern([
+    "reinstatement", "reinstated", "readmission", "readmitted", "boycott", "boycotts",
+    "boycotted", "boycotting", "ban", "banned", "suspension", "suspended",
+    "exclusion", "excluded", "return to competition",
+])
+_SPORTS_COMPETITION_RE = _word_pattern([
+    "championship", "championships", "tournament", "tournaments", "competition",
+    "competitions", "hockey", "football", "soccer", "olympic", "olympics", "teams",
+])
+
 _TRADE_ECONOMY_RE = _word_pattern([
     "trade surplus", "trade deficit", "trade balance", "trade volume",
     "exports", "imports", "tariffs", "trade barriers", "supply chains",
@@ -246,7 +267,7 @@ _SUMMIT_ACTION_RE = _word_pattern(
     "accord resolution deadlock deadlocked dispute disputes walkout meet meets meeting met "
     "open opens opened opening urge urges urged urging call calls called calling address "
     "addresses addressed addressing warn warns warned warning pledge pledges pledged "
-    "announce announces announced announcing".split()
+    "announce announces announced announcing begin begins began beginning discussion discussions".split()
 )
 _STATE_ACTOR_RE = _word_pattern(
     ["president", "presidents", "prime minister", "minister", "ministers", "trade ministers",
@@ -282,7 +303,9 @@ _INCIDENT_RE = _word_pattern(
 _MIGRANT_BOAT_DISASTER_RE = re.compile(
     r"\bmigrant boats?\b.{0,100}\b(?:capsiz\w*|sank|sinking|shipwreck\w*|disaster|"
     r"dead|killed|missing|drown\w*|recover\w*|bodies)\b|\b(?:capsiz\w*|sank|shipwreck\w*|disaster|"
-    r"drown\w*|recover\w*|bodies|dead|killed|missing)\b.{0,100}\bmigrant boats?\b",
+    r"drown\w*|recover\w*|bodies|dead|killed|missing)\b.{0,100}\bmigrant boats?\b"
+    r"|\bboat\b.{0,100}\bcarrying\s+migrants?\b.{0,100}\b(?:capsiz\w*|sank|sinking|shipwreck\w*|death toll|dead|killed|missing|drown\w*|bodies)\b"
+    r"|\b(?:capsiz\w*|sank|shipwreck\w*|death toll|drown\w*|bodies|dead|killed|missing)\b.{0,100}\bboat\b.{0,100}\bcarrying\s+migrants?\b",
     re.IGNORECASE,
 )
 _PERSONAL_SUMMIT_RE = re.compile(
@@ -384,6 +407,17 @@ def assess(headline: str, summary: str = "", tags=(), url: str = "") -> tuple[bo
         and bool(_POLITICAL_CANDIDACY_RE.search(text))
         and bool(_word_pattern(["president", "presidency", "presidential"]).search(text))
     )
+    climate_energy_cooperation = (
+        bool(foreign_places)
+        and bool(_CLIMATE_ENERGY_COOPERATION_RE.search(text))
+        and bool(re.search(r"\b(?:countries|nations|international|global)\b", text, re.I))
+    )
+    foreign_sports_diplomacy = (
+        bool(foreign_places)
+        and bool(_SPORTS_DIPLOMACY_RE.search(text))
+        and bool(_SPORTS_COMPETITION_RE.search(text))
+        and bool(re.search(r"\b(?:government|minister|president|federation|officials?|countries|nations)\b", text, re.I))
+    )
     diplomatic_meeting = (
         bool(foreign_places)
         and bool(_STATE_ACTOR_RE.search(text))
@@ -451,7 +485,7 @@ def assess(headline: str, summary: str = "", tags=(), url: str = "") -> tuple[bo
         foreign_leadership_change, security_operation, international_health_crisis,
         international_trade, international_plot, foreign_legal_political, foreign_disaster,
         maritime_security, foreign_political_candidacy, diplomatic_meeting, foreign_state_family,
-        espionage_plot_context,
+        espionage_plot_context, climate_energy_cooperation, foreign_sports_diplomacy,
     ))
 
     personal_summit = bool(_PERSONAL_SUMMIT_RE.search(text)) and not bool(
