@@ -157,3 +157,43 @@ class GeopoliticsFilterTests(unittest.TestCase):
         self.assertRejected("Olympic champion launches a new sportswear brand")
         self.assertRejected("Tech CEO denies rumors about a workplace spying scandal")
         self.assertRejected("Flights delayed by routine weather disruption in France")
+
+
+    def test_latest_review_summit_discussions_are_geopolitical(self):
+        self.assertAccepted(
+            "World leaders begin formal discussions at the United Nations climate change conference in Turkey"
+        )
+
+    def test_international_climate_energy_cooperation_is_geopolitical(self):
+        self.assertAccepted(
+            "Brazil will launch a road map to help countries transition from fossil fuels to renewable energies"
+        )
+        self.assertRejected(
+            "Local company launches a plan to replace its office lights with renewable energy"
+        )
+
+    def test_foreign_presidential_bidding_gerund_is_geopolitical(self):
+        self.assertAccepted("Teddy Riner is bidding for the French presidency")
+
+    def test_migrant_boat_carrying_migrants_wording_is_geopolitical(self):
+        self.assertAccepted(
+            "The death toll from the capsize off Senegal of a boat carrying migrants has risen to 39"
+        )
+
+    def test_bangladeshi_demonym_supports_foreign_leadership_story(self):
+        self.assertAccepted("Bangladeshi opposition leader plans return from exile")
+        self.assertAccepted("Sheikh Hasina's plans to return from exile")
+
+    def test_government_formation_synonyms_are_consistent(self):
+        self.assertAccepted(
+            "Israel's president officially gives opposition leader Gadi Eisenkot the first chance to form the next government"
+        )
+        self.assertAccepted(
+            "Israel's president picks opposition candidate Gadi Eisenkot to form a new government"
+        )
+
+    def test_international_sports_diplomacy_is_not_vetoed_as_sports(self):
+        self.assertAccepted(
+            "Germany's government wants to keep the men's hockey world championships in the country after Russia's reinstatement caused nearly half of the 16 teams to threaten a boycott"
+        )
+        self.assertRejected("Germany wins the men's hockey world championships")
