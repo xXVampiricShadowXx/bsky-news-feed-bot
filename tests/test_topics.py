@@ -136,3 +136,24 @@ class GeopoliticsFilterTests(unittest.TestCase):
 
     def test_domestic_us_leadership_story_is_not_geopolitical(self):
         self.assertRejected("US president resigns amid a domestic political scandal")
+
+    def test_reported_followup_false_negatives_are_accepted(self):
+        self.assertAccepted("Former Red Brigades member escapes extradition after crossing the border into France")
+        self.assertAccepted("Sheikh Hasina says she plans to return to Bangladesh from exile")
+        self.assertAccepted("Israel's president picks opposition leader to form a government")
+        self.assertAccepted("Drone attack targets a military base in Colombia")
+        self.assertAccepted("Dozens of European flights targeted by bomb threats")
+        self.assertAccepted("Ousted Paraguayan president placed under house arrest")
+        self.assertAccepted("Strong earthquake strikes central Japan")
+        self.assertAccepted("Piracy rising in the Gulf of Aden as ships face attacks")
+        self.assertAccepted("Olympic champion Teddy Riner launches bid for the French presidency")
+        self.assertAccepted("Qatar's prime minister meets Trump at the White House for Iran talks")
+        self.assertAccepted("North Korean leader's daughter appears at state events")
+        self.assertAccepted("Nvidia CEO denies spy plot involving foreign intelligence officials")
+
+    def test_followup_rules_keep_local_incidents_and_celebrity_news_out(self):
+        self.assertRejected("A minor earthquake rattles a local town in California")
+        self.assertRejected("Pirates-themed restaurant opens near the harbor")
+        self.assertRejected("Olympic champion launches a new sportswear brand")
+        self.assertRejected("Tech CEO denies rumors about a workplace spying scandal")
+        self.assertRejected("Flights delayed by routine weather disruption in France")
