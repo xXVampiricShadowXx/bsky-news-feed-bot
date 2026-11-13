@@ -92,3 +92,44 @@ class GeopoliticsFilterTests(unittest.TestCase):
 
     def test_case_sensitive_acronyms(self):
         self.assertRejected("Let us know who won the cup of tea contest")
+
+
+    def test_reported_ap_false_negatives_are_accepted(self):
+        self.assertAccepted(
+            "Pakistani security forces killed 74 militants in multiple raids on hideouts bordering Afghanistan"
+        )
+        self.assertAccepted(
+            "COP31 President Murat Kurum opened the U.N. climate summit in Turkey"
+        )
+        self.assertAccepted(
+            "Indonesia's vice president resigns after a dispute over his academic credentials"
+        )
+        self.assertAccepted("Congo's Ebola cases have crossed 11,000")
+        self.assertAccepted(
+            "U.S. authorities charged three men with plotting nearly 20 attacks targeting "
+            "Jewish communities in Europe and the U.S., and a British military base"
+        )
+        self.assertAccepted("China's trade surplus exceeds $1 trillion for a second straight year")
+        self.assertAccepted(
+            "Greek authorities recovered 12 bodies from a migrant boat found sailing south of Crete"
+        )
+
+    def test_front_line_is_a_phrase_not_two_independent_triggers(self):
+        self.assertRejected(
+            "People line up each night outside a charity-run food pantry in Havana"
+        )
+        self.assertAccepted(
+            "Civilians trapped along the front line as fighting intensifies in Ukraine"
+        )
+
+    def test_foreign_leadership_changes_are_geopolitical(self):
+        self.assertAccepted("Indonesia's vice president steps down after coalition dispute")
+        self.assertAccepted("Pakistan's prime minister appoints a new cabinet after coalition talks")
+
+    def test_large_scale_international_health_crisis_is_geopolitical(self):
+        self.assertAccepted("Ebola outbreak spreads across Congo as cases exceed 11,000")
+        self.assertRejected("Local clinic reports 12 seasonal flu cases")
+
+    def test_cross_border_trade_story_is_geopolitical(self):
+        self.assertAccepted("China's trade surplus exceeds $1 trillion")
+        self.assertRejected("Local retailer reports record holiday sales")
