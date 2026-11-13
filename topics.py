@@ -148,25 +148,25 @@ _LEADERSHIP_CHANGE_RE = _word_pattern(
     "appoint appoints appointed appointment coalition coalitions coalition-building".split()
 )
 _SECURITY_RAID_RE = re.compile(
-    r"\\bsecurity forces?\\b.{0,140}\\b(?:killed|kill|killing|slain|eliminated)\\b"
-    r".{0,100}\\b(?:militants?|insurgents?|fighters?|rebels?|gunmen)\\b"
-    r"|\\b(?:killed|kill|killing|slain|eliminated)\\b.{0,100}"
-    r"\\b(?:militants?|insurgents?|fighters?|rebels?|gunmen)\\b.{0,100}\\b(?:raids?|operations?)\\b",
+    r"\bsecurity forces?\b.{0,140}\b(?:killed|kill|killing|slain|eliminated)\b"
+    r".{0,100}\b(?:militants?|insurgents?|fighters?|rebels?|gunmen)\b"
+    r"|\b(?:killed|kill|killing|slain|eliminated)\b.{0,100}"
+    r"\b(?:militants?|insurgents?|fighters?|rebels?|gunmen)\b.{0,100}\b(?:raids?|operations?)\b",
     re.IGNORECASE,
 )
 _HEALTH_CRISIS_RE = re.compile(
-    r"\\b(?:ebola|cholera|mpox|polio|measles|malaria|avian flu|bird flu|"
-    r"coronavirus|covid-?19|plague|dengue|outbreak|epidemic|pandemic)\\b"
-    r".{0,100}\\b(?:cases?|outbreak|epidemic|spreads?|spread|crossed|surge|surges|"
-    r"deaths?|infections?)\\b"
-    r"|\\b(?:cases?|outbreak|epidemic|pandemic|infections?)\\b.{0,100}"
-    r"\\b(?:ebola|cholera|mpox|polio|measles|malaria|avian flu|bird flu|"
-    r"coronavirus|covid-?19|plague|dengue)\\b",
+    r"\b(?:ebola|cholera|mpox|polio|measles|malaria|avian flu|bird flu|"
+    r"coronavirus|covid-?19|plague|dengue|outbreak|epidemic|pandemic)\b"
+    r".{0,100}\b(?:cases?|outbreak|epidemic|spreads?|spread|crossed|surge|surges|"
+    r"deaths?|infections?)\b"
+    r"|\b(?:cases?|outbreak|epidemic|pandemic|infections?)\b.{0,100}"
+    r"\b(?:ebola|cholera|mpox|polio|measles|malaria|avian flu|bird flu|"
+    r"coronavirus|covid-?19|plague|dengue)\b",
     re.IGNORECASE,
 )
 _LARGE_SCALE_RE = re.compile(
-    r"\\b(?:[1-9]\\d{3,}|thousands?|tens of thousands|hundreds of deaths|"
-    r"large[- ]scale|nationwide|across the country|spreading across)\\b",
+    r"\b(?:[1-9]\d{3,}|thousands?|tens of thousands|hundreds of deaths|"
+    r"large[- ]scale|nationwide|across the country|spreading across)\b",
     re.IGNORECASE,
 )
 _TRADE_ECONOMY_RE = _word_pattern([
@@ -176,10 +176,10 @@ _TRADE_ECONOMY_RE = _word_pattern([
     "cross-border trade", "global trade", "international trade",
 ])
 _INTERNATIONAL_PLOT_RE = re.compile(
-    r"\\b(?:plotting|planned|planning|conspiring|conspiracy|foiled)\\b"
-    r".{0,100}\\b(?:attacks?|bombings?|assassinations?)\\b"
-    r"|\\b(?:attacks?|bombings?|assassinations?)\\b.{0,100}"
-    r"\\b(?:plotting|planned|planning|conspiring|conspiracy|foiled)\\b",
+    r"\b(?:plotting|planned|planning|conspiring|conspiracy|foiled)\b"
+    r".{0,100}\b(?:attacks?|bombings?|assassinations?)\b"
+    r"|\b(?:attacks?|bombings?|assassinations?)\b.{0,100}"
+    r"\b(?:plotting|planned|planning|conspiring|conspiracy|foiled)\b",
     re.IGNORECASE,
 )
 _DOMESTIC_PLACES = {"australia", "australian", "canberra"}
@@ -229,8 +229,8 @@ _INCIDENT_RE = _word_pattern(
 )
 _MIGRANT_BOAT_DISASTER_RE = re.compile(
     r"\bmigrant boats?\b.{0,100}\b(?:capsiz\w*|sank|sinking|shipwreck\w*|disaster|"
-    r"dead|killed|missing|drown\w*)\b|\b(?:capsiz\w*|sank|shipwreck\w*|disaster|"
-    r"drown\w*)\b.{0,100}\bmigrant boats?\b",
+    r"dead|killed|missing|drown\w*|recover\w*|bodies)\b|\b(?:capsiz\w*|sank|shipwreck\w*|disaster|"
+    r"drown\w*|recover\w*|bodies|dead|killed|missing)\b.{0,100}\bmigrant boats?\b",
     re.IGNORECASE,
 )
 _PERSONAL_SUMMIT_RE = re.compile(
