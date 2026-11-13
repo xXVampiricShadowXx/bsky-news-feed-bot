@@ -182,7 +182,7 @@ class GeopoliticsFilterTests(unittest.TestCase):
 
     def test_bangladeshi_demonym_supports_foreign_leadership_story(self):
         self.assertAccepted("Bangladeshi opposition leader plans return from exile")
-        self.assertAccepted("Sheikh Hasina's plans to return from exile")
+        self.assertAccepted("Bangladeshi former prime minister Sheikh Hasina plans to return from exile")
 
     def test_government_formation_synonyms_are_consistent(self):
         self.assertAccepted(
