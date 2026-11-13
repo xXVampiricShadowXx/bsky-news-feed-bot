@@ -42,7 +42,7 @@ _ORG_NAMES = [
 _LEADERS = r"""
 Putin Trump Xi Zelensky Zelenskyy Netanyahu Modi Erdogan Erdo?an Macron Starmer Merz
 Khamenei Pezeshkian Lukashenko Orb?n Orban Meloni Carney Albanese Lula Milei Ramaphosa
-Guterres Rubio Lavrov Assad Sharaa Lecornu
+Guterres Rubio Lavrov Assad Sharaa Lecornu Hasina
 """.split()
 
 # Countries, regions, and demonyms. One mention is a supporting signal.
@@ -57,12 +57,12 @@ Indonesia Iran Iranian Iraq Iraqi Ireland Irish Israel Israeli Israelis Italy It
 Jordan Kazakhstan Kenya Kosovo Kuwait Kyrgyzstan Laos Latvia Lebanon Lebanese Libya Libyan
 Lithuania Mali Mexico Mexican Moldova Mongolia Montenegro Morocco Mozambique Namibia Nepal
 Netherlands Dutch Nicaragua Niger Nigeria Nigerian Norway Oman Pakistan Pakistani Palestine
-Palestinian Palestinians Panama Paraguay Peru Philippines Philippine Poland Polish Portugal Qatar
-Romania Russia Russian Russians Rwanda Saudi Senegal Serbia Serbian Singapore Slovakia Slovenia
+Palestinian Palestinians Panama Paraguay Paraguayan Peru Peruvian Philippines Philippine Filipino Poland Polish Portugal Portuguese Qatar Qatari
+Romania Romanian Russia Russian Russians Rwanda Rwandan Saudi Senegalese Senegal Serbia Serbian Singapore Singaporean Slovakia Slovak Slovenia Slovenian
 Somalia Somali Somaliland Spain Spanish Sudan Sudanese Sweden Swedish Switzerland Syria Syrian
 Taiwan Taiwanese Tajikistan Tanzania Thailand Thai Tibet Tunisia Turkey Turkish Türkiye
-Turkmenistan Uganda Ukraine Ukrainian Ukrainians UAE Emirates Uruguay Uzbekistan Venezuela
-Venezuelan Vietnam Vietnamese Yemen Yemeni Zambia Zimbabwe Kashmir Crimea Donbas Kaliningrad
+Turkmenistan Uganda Ukraine Ukrainian Ukrainians UAE Emirates Uruguay Uruguayan Uzbekistan Uzbek Venezuela
+Venezuelan Vietnam Vietnamese Yemen Yemeni Zambia Zambian Zimbabwe Zimbabwean Kashmir Crimea Donbas Kaliningrad
 Crimean Kurdish Kurds Uyghur Uyghurs Rohingya Balkans Caucasus Sahel Kyiv Moscow Beijing
 Tehran Jerusalem Washington Brussels Pyongyang Seoul Tokyo Taipei Damascus Beirut Baghdad
 Kabul Khartoum Caracas Havana Minsk Ankara Riyadh Doha Cairo Islamabad Delhi
@@ -147,8 +147,54 @@ _LEADERSHIP_CHANGE_RE = _word_pattern([
     "step down", "steps down", "stepped down", "stepping down",
     "ousted", "ousts", "ousting", "dismissed", "dismissal", "impeached",
     "impeachment", "replaced", "replacement", "appoint", "appoints",
-    "appointed", "appointment", "coalition", "coalitions", "coalition-building",
+    "appointed", "appointment", "coalition", "coalitions", "coalition-building", "picked", "picks", "pick", "chosen", "chooses", "selected", "selects", "named", "names", "tapped", "taps", "mandated",
 ])
+_GOVERNMENT_FORMATION_RE = _word_pattern([
+    "form a government", "form government", "form a coalition", "form coalition",
+    "form a cabinet", "form cabinet", "government formation",
+])
+_CROSS_BORDER_LEGAL_RE = _word_pattern([
+    "extradition", "extradited", "extradite", "exile", "exiled", "return from exile",
+    "escape from custody", "escaped custody", "fled abroad", "fleeing abroad",
+    "cross-border arrest", "cross-border legal", "international arrest warrant",
+])
+_SECURITY_TARGET_RE = _word_pattern([
+    "military base", "military bases", "air base", "airbase", "airfield",
+    "airport", "airports", "flights", "flight", "airlines", "aircraft",
+    "aviation", "transit system", "rail network", "train station", "subway",
+    "shipping", "commercial vessel", "cargo ship",
+])
+_DISASTER_IMPACT_RE = _word_pattern([
+    "strong", "powerful", "major", "severe", "deadly", "devastating",
+    "magnitude", "kills", "killed", "injures", "injured", "damages", "damage",
+    "strikes", "struck", "hits", "hit", "destroys", "destroyed",
+])
+_MARITIME_SECURITY_RE = _word_pattern([
+    "piracy", "pirates", "pirate", "hijacking", "hijacked", "hijack",
+    "shipping lane", "shipping lanes", "commercial shipping", "merchant vessel",
+    "merchant vessels", "cargo ship", "cargo ships",
+])
+_POLITICAL_CANDIDACY_RE = _word_pattern([
+    "bid for the presidency", "bid for presidency", "presidential bid",
+    "run for president", "running for president", "candidate for president",
+    "presidential candidate", "seeks the presidency", "seeking the presidency",
+    "presidential race", "presidential campaign",
+])
+_DIPLOMATIC_MEETING_RE = _word_pattern([
+    "talks", "nuclear talks", "iran talks", "diplomatic talks", "bilateral talks",
+    "negotiations", "diplomacy", "foreign policy", "peace process",
+])
+_MEETING_ACTION_RE = _word_pattern([
+    "meet", "meets", "meeting", "met", "visit", "visits", "visited",
+    "welcomed", "hosts", "hosted", "held talks",
+])
+_STATE_FAMILY_RE = re.compile(
+    r"\b(?:leader|president|dictator|ruler|king|supreme leader)\b.{0,70}"
+    r"\b(?:daughter|son|child|children|heir)\b"
+    r"|\b(?:daughter|son|child|children|heir)\b.{0,70}"
+    r"\b(?:leader|president|dictator|ruler|king|supreme leader)\b",
+    re.IGNORECASE,
+)
 _SECURITY_RAID_RE = re.compile(
     r"\bsecurity forces?\b.{0,140}\b(?:killed|kill|killing|slain|eliminated)\b"
     r".{0,100}\b(?:militants?|insurgents?|fighters?|rebels?|gunmen)\b"
@@ -293,7 +339,8 @@ def assess(headline: str, summary: str = "", tags=(), url: str = "") -> tuple[bo
     foreign_places = places - _DOMESTIC_PLACES
     two_countries = len(headline_places) >= 2
     conflict = bool(_WAR_CORE_RE.search(text)) or (
-        bool(_ATTACK_RE.search(text)) and (two_countries or bool(_ORG_RE.search(text)))
+        bool(_ATTACK_RE.search(text)) and (two_countries or bool(_ORG_RE.search(text))
+        or (bool(foreign_places) and bool(_SECURITY_TARGET_RE.search(text))))
     ) or (
         bool(_THREAT_RE.search(text))
         and bool(_word_pattern(["weapons", "military", "nuclear", "missile"]).search(text))
@@ -312,7 +359,40 @@ def assess(headline: str, summary: str = "", tags=(), url: str = "") -> tuple[bo
     foreign_leadership_change = (
         bool(foreign_places)
         and bool(_STATE_ACTOR_RE.search(text))
-        and bool(_LEADERSHIP_CHANGE_RE.search(text))
+        and (bool(_LEADERSHIP_CHANGE_RE.search(text)) or bool(_GOVERNMENT_FORMATION_RE.search(text)))
+    )
+    foreign_legal_political = (
+        bool(foreign_places)
+        and bool(_CROSS_BORDER_LEGAL_RE.search(text))
+        and bool(_STATE_ACTOR_RE.search(text) or _LEADER_RE.search(text)
+                 or re.search(r"\b(?:former|exiled|ousted|opposition|president|minister)\b", text, re.I))
+    )
+    foreign_disaster = (
+        bool(foreign_places)
+        and bool(_INCIDENT_RE.search(text))
+        and bool(_DISASTER_IMPACT_RE.search(text))
+        and bool(re.search(r"\b(?:earthquake|tsunami|volcanic eruption|typhoon|hurricane)\b", text, re.I))
+    )
+    maritime_security = (
+        bool(foreign_places)
+        and bool(_MARITIME_SECURITY_RE.search(text))
+        and bool(re.search(r"\b(?:Gulf of Aden|Red Sea|strait|shipping lane|vessel|ship|piracy|pirates)\b", text, re.I))
+    )
+    foreign_political_candidacy = (
+        bool(foreign_places)
+        and bool(_POLITICAL_CANDIDACY_RE.search(text))
+        and bool(_word_pattern(["president", "presidency", "presidential"]).search(text))
+    )
+    diplomatic_meeting = (
+        bool(foreign_places)
+        and bool(_STATE_ACTOR_RE.search(text))
+        and bool(_MEETING_ACTION_RE.search(text))
+        and bool(_DIPLOMATIC_MEETING_RE.search(text))
+    )
+    foreign_state_family = (
+        bool(foreign_places)
+        and bool(_STATE_FAMILY_RE.search(text))
+        and bool(re.search(r"\b(?:state event|state events|military parade|state banquet|state visit|official event)\b", text, re.I))
     )
     security_operation = (
         bool(foreign_places)
@@ -360,7 +440,8 @@ def assess(headline: str, summary: str = "", tags=(), url: str = "") -> tuple[bo
         conflict, diplomacy, sanctions, foreign_election, summit_negotiation,
         un_leadership, state_espionage, international_terrorism, cross_border_crisis,
         foreign_leadership_change, security_operation, international_health_crisis,
-        international_trade, international_plot,
+        international_trade, international_plot, foreign_legal_political, foreign_disaster,
+        maritime_security, foreign_political_candidacy, diplomatic_meeting, foreign_state_family,
     ))
 
     personal_summit = bool(_PERSONAL_SUMMIT_RE.search(text)) and not bool(
@@ -379,16 +460,24 @@ def assess(headline: str, summary: str = "", tags=(), url: str = "") -> tuple[bo
             or corporate_or_market_match.start() < government_investigation_match.start()
         )
     )
+    espionage_plot_context = (
+        bool(re.search(r"\b(?:spy|spying|espionage)\b.{0,70}\b(?:plot|ring|scheme|network|allegations?)\b"
+                       r"|\b(?:plot|ring|scheme|network|allegations?)\b.{0,70}\b(?:spy|spying|espionage)\b",
+                       text, re.I))
+        and bool(foreign_places or leaders or _GOVERNMENT_INVESTIGATION_RE.search(text)
+                 or re.search(r"\b(?:foreign intelligence|national security|state-sponsored)\b", text, re.I))
+    )
     corporate_fallout = (
         bool(_CORPORATE_SCANDAL_RE.search(headline))
         and bool(_PERSONAL_OR_MARKET_RE.search(headline) or _STATE_SECURITY_RE.search(text))
         and (not government_security_investigation or corporate_fallout_leads)
+        and not espionage_plot_context
     )
     if personal_summit:
         return False, score, "not geopolitical (personal summit appearance)"
     if historical_without_current_angle:
         return False, score, "not geopolitical (historical story without a current angle)"
-    if corporate_fallout:
+    if corporate_fallout and not core:
         return False, score, "not geopolitical (corporate or personal fallout)"
 
     off_topic = _distinct(_OFF_TOPIC_RE, headline)
