@@ -133,3 +133,6 @@ class GeopoliticsFilterTests(unittest.TestCase):
     def test_cross_border_trade_story_is_geopolitical(self):
         self.assertAccepted("China's trade surplus exceeds $1 trillion")
         self.assertRejected("Local retailer reports record holiday sales")
+
+    def test_domestic_us_leadership_story_is_not_geopolitical(self):
+        self.assertRejected("US president resigns amid a domestic political scandal")
