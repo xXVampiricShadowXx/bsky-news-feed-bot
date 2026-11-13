@@ -115,11 +115,13 @@ _OFF_TOPIC_RE = _word_pattern(
 
 _NOT_MILITARY_RE = re.compile(r"\bhome[- ]invasions?\b|\bpest invasions?\b", re.IGNORECASE)
 
-_WAR_CORE_RE = _word_pattern(
-    "war wars warfare ceasefire cease-fire truce armistice invasion invade invaded "
-    "invades occupation occupied annexation annexed bombardment shelling frontline "
-    "front line armed conflict coup coups junta juntas insurgency".split()
-)
+# Keep phrases intact: never put multi-word entries in a whitespace-split block.
+_WAR_CORE_RE = _word_pattern([
+    "war", "wars", "warfare", "ceasefire", "cease-fire", "truce", "armistice",
+    "invasion", "invade", "invaded", "invades", "occupation", "occupied",
+    "annexation", "annexed", "bombardment", "shelling", "frontline", "coup",
+    "coups", "junta", "juntas", "insurgency", "armed conflict", "front line",
+])
 _ATTACK_RE = _word_pattern(
     "attack attacks attacked airstrike airstrikes strike strikes struck missile missiles "
     "drone drones shelling".split()
@@ -140,6 +142,46 @@ _SANCTIONS_RE = _word_pattern(
 _ELECTION_RE = _word_pattern(
     "election elections electoral referendum president-elect".split()
 )
+_LEADERSHIP_CHANGE_RE = _word_pattern(
+    "resign resigns resigned resigning resignation resignations step steps stepped stepping "
+    "down ousted ousts ousting dismissed dismissal impeached impeachment replaced replacement "
+    "appoint appoints appointed appointment coalition coalitions coalition-building".split()
+)
+_SECURITY_RAID_RE = re.compile(
+    r"\\bsecurity forces?\\b.{0,140}\\b(?:killed|kill|killing|slain|eliminated)\\b"
+    r".{0,100}\\b(?:militants?|insurgents?|fighters?|rebels?|gunmen)\\b"
+    r"|\\b(?:killed|kill|killing|slain|eliminated)\\b.{0,100}"
+    r"\\b(?:militants?|insurgents?|fighters?|rebels?|gunmen)\\b.{0,100}\\b(?:raids?|operations?)\\b",
+    re.IGNORECASE,
+)
+_HEALTH_CRISIS_RE = re.compile(
+    r"\\b(?:ebola|cholera|mpox|polio|measles|malaria|avian flu|bird flu|"
+    r"coronavirus|covid-?19|plague|dengue|outbreak|epidemic|pandemic)\\b"
+    r".{0,100}\\b(?:cases?|outbreak|epidemic|spreads?|spread|crossed|surge|surges|"
+    r"deaths?|infections?)\\b"
+    r"|\\b(?:cases?|outbreak|epidemic|pandemic|infections?)\\b.{0,100}"
+    r"\\b(?:ebola|cholera|mpox|polio|measles|malaria|avian flu|bird flu|"
+    r"coronavirus|covid-?19|plague|dengue)\\b",
+    re.IGNORECASE,
+)
+_LARGE_SCALE_RE = re.compile(
+    r"\\b(?:[1-9]\\d{3,}|thousands?|tens of thousands|hundreds of deaths|"
+    r"large[- ]scale|nationwide|across the country|spreading across)\\b",
+    re.IGNORECASE,
+)
+_TRADE_ECONOMY_RE = _word_pattern([
+    "trade surplus", "trade deficit", "trade balance", "trade volume",
+    "exports", "imports", "tariffs", "trade barriers", "supply chains",
+    "currency crisis", "currency devaluation", "foreign investment",
+    "cross-border trade", "global trade", "international trade",
+])
+_INTERNATIONAL_PLOT_RE = re.compile(
+    r"\\b(?:plotting|planned|planning|conspiring|conspiracy|foiled)\\b"
+    r".{0,100}\\b(?:attacks?|bombings?|assassinations?)\\b"
+    r"|\\b(?:attacks?|bombings?|assassinations?)\\b.{0,100}"
+    r"\\b(?:plotting|planned|planning|conspiring|conspiracy|foiled)\\b",
+    re.IGNORECASE,
+)
 _DOMESTIC_PLACES = {"australia", "australian", "canberra"}
 _SUMMIT_RE = re.compile(
     r"\b(?:summits?|UN|NATO|EU|G[- ]?7|G[- ]?20|BRICS|ASEAN|COP\d+|"
@@ -149,7 +191,10 @@ _SUMMIT_RE = re.compile(
 _SUMMIT_ACTION_RE = _word_pattern(
     "attend attending attends attended skip skips skipped skipping boycott boycotts "
     "boycotted negotiate negotiates negotiated negotiation negotiations deal agreement "
-    "accord resolution deadlock deadlocked dispute disputes walkout meet meets meeting met".split()
+    "accord resolution deadlock deadlocked dispute disputes walkout meet meets meeting met "
+    "open opens opened opening urge urges urged urging call calls called calling address "
+    "addresses addressed addressing warn warns warned warning pledge pledges pledged "
+    "announce announces announced announcing".split()
 )
 _STATE_ACTOR_RE = _word_pattern(
     ["president", "presidents", "prime minister", "minister", "ministers", "trade ministers",
@@ -259,6 +304,29 @@ def assess(headline: str, summary: str = "", tags=(), url: str = "") -> tuple[bo
         and bool(_SUMMIT_ACTION_RE.search(text))
         and bool(foreign_places or leaders or _STATE_ACTOR_RE.search(text))
     )
+    foreign_leadership_change = (
+        bool(foreign_places)
+        and bool(_STATE_ACTOR_RE.search(text))
+        and bool(_LEADERSHIP_CHANGE_RE.search(text))
+    )
+    security_operation = (
+        bool(foreign_places)
+        and bool(_SECURITY_RAID_RE.search(text))
+    )
+    international_health_crisis = (
+        bool(foreign_places)
+        and bool(_HEALTH_CRISIS_RE.search(text))
+        and bool(_LARGE_SCALE_RE.search(text))
+    )
+    international_trade = (
+        bool(foreign_places)
+        and bool(_TRADE_ECONOMY_RE.search(text))
+    )
+    international_plot = (
+        bool(_INTERNATIONAL_PLOT_RE.search(text))
+        and (two_countries or bool(_ORG_RE.search(text))
+             or bool(re.search(r"\\b(?:foreign|British|U\\.S\\.|European)\\s+(?:military )?base\\b", text, re.I)))
+    )
     un_leadership = (
         bool(_ORG_RE.search(text))
         and bool(_word_pattern(["secretary-general"]).search(text))
@@ -286,6 +354,8 @@ def assess(headline: str, summary: str = "", tags=(), url: str = "") -> tuple[bo
     core = any((
         conflict, diplomacy, sanctions, foreign_election, summit_negotiation,
         un_leadership, state_espionage, international_terrorism, cross_border_crisis,
+        foreign_leadership_change, security_operation, international_health_crisis,
+        international_trade, international_plot,
     ))
 
     personal_summit = bool(_PERSONAL_SUMMIT_RE.search(text)) and not bool(
