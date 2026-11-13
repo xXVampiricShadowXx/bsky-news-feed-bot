@@ -165,7 +165,7 @@ _HEALTH_CRISIS_RE = re.compile(
     re.IGNORECASE,
 )
 _LARGE_SCALE_RE = re.compile(
-    r"\b(?:[1-9]\d{3,}|thousands?|tens of thousands|hundreds of deaths|"
+    r"\b(?:[1-9]\d{0,2}(?:,\d{3})+|[1-9]\d{3,}|thousands?|tens of thousands|hundreds of deaths|"
     r"large[- ]scale|nationwide|across the country|spreading across)\b",
     re.IGNORECASE,
 )
@@ -182,7 +182,10 @@ _INTERNATIONAL_PLOT_RE = re.compile(
     r"\b(?:plotting|planned|planning|conspiring|conspiracy|foiled)\b",
     re.IGNORECASE,
 )
-_DOMESTIC_PLACES = {"australia", "australian", "canberra"}
+_DOMESTIC_PLACES = {
+    "australia", "australian", "canberra",
+    "us", "u.s.", "united states", "american", "americans", "washington",
+}
 _SUMMIT_RE = re.compile(
     r"\b(?:summits?|UN|NATO|EU|G[- ]?7|G[- ]?20|BRICS|ASEAN|COP\d+|"
     r"climate talks|general assembly|security council|european union|african union)\b",
@@ -325,7 +328,7 @@ def assess(headline: str, summary: str = "", tags=(), url: str = "") -> tuple[bo
     international_plot = (
         bool(_INTERNATIONAL_PLOT_RE.search(text))
         and (two_countries or bool(_ORG_RE.search(text))
-             or bool(re.search(r"\\b(?:foreign|British|U\\.S\\.|European)\\s+(?:military )?base\\b", text, re.I)))
+             or bool(re.search(r"\b(?:foreign|British|U\.S\.|European)\s+(?:military )?base\b", text, re.I)))
     )
     un_leadership = (
         bool(_ORG_RE.search(text))
