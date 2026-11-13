@@ -142,11 +142,13 @@ _SANCTIONS_RE = _word_pattern(
 _ELECTION_RE = _word_pattern(
     "election elections electoral referendum president-elect".split()
 )
-_LEADERSHIP_CHANGE_RE = _word_pattern(
-    "resign resigns resigned resigning resignation resignations step steps stepped stepping "
-    "down ousted ousts ousting dismissed dismissal impeached impeachment replaced replacement "
-    "appoint appoints appointed appointment coalition coalitions coalition-building".split()
-)
+_LEADERSHIP_CHANGE_RE = _word_pattern([
+    "resign", "resigns", "resigned", "resigning", "resignation", "resignations",
+    "step down", "steps down", "stepped down", "stepping down",
+    "ousted", "ousts", "ousting", "dismissed", "dismissal", "impeached",
+    "impeachment", "replaced", "replacement", "appoint", "appoints",
+    "appointed", "appointment", "coalition", "coalitions", "coalition-building",
+])
 _SECURITY_RAID_RE = re.compile(
     r"\bsecurity forces?\b.{0,140}\b(?:killed|kill|killing|slain|eliminated)\b"
     r".{0,100}\b(?:militants?|insurgents?|fighters?|rebels?|gunmen)\b"
